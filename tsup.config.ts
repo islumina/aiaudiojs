@@ -14,4 +14,5 @@ export default defineConfig({
   outDir: "dist",
   // Howler is a peerDependency — never bundle it into the shell.
   external: ["howler"],
+  minify: true,
 });

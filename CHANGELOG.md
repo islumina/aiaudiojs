@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-28
+
+### Added
+
+- `createAudio({ autoUnlock?, volume?, resumeOnVisibility? })` — fully
+  implemented factory; closure-based `Audio` handle; all methods
+  destructurable without `this`.
+- `audio.unlock()` — resumes `Howler.ctx` (best-effort); idempotent; swallows
+  errors from already-running contexts.
+- `audio.load(url, signal?)` — wraps `new Howl({ src: [url], preload: true })`
+  in a `Promise`; resolves on `onload`, rejects with `AudioError` on
+  `loaderror`, rejects with `DOMException("AbortError")` if `signal` fires.
+- `audio.crossfade(from, to, { duration, signal? })` — linear-power crossfade
+  using `Howl.fade()` on both ramps; resolves after `durationMs` via
+  `setTimeout`. Aborting via `signal` clears the timer and resolves
+  immediately; the in-progress Howler fade continues silently (Howler 2.x has
+  no fade-cancel API). **Equal-power curve is planned for 0.2.0.**
+- `Sound.play(opts?)`, `.pause(id?)`, `.stop(id?)` — delegate to Howler;
+  `play` applies `volume`, `rate`, `loop` per-id and wires `signal` abort to
+  `stop(id)`.
+- `Sound.fade(from, to, ms, id?)` — delegates to `Howl.fade`; resolves after
+  `ms` via `setTimeout`.
+- `Sound.dispose()` / `Audio.dispose()` / `Audio.disposeAll()` — idempotent
+  teardown; cascade-disposes Sounds; removes all `document` listeners.
+- `sound.nativeHowl` — readonly escape hatch to the underlying `Howl`.
+- `audio.volume` getter/setter — clamps to `[0, 1]`; propagates to
+  `Howler.volume()`.
+- Coverage thresholds tightened to 95/90/100/100 with happy-dom + Howler mock.
+- Size budget tightened to 2 KB gzip (shell only; Howler stays external).
+- `tsup.config.ts` now sets `minify: true`.
+- `vitest.config.ts` now sets `environment: "happy-dom"`.
+- `happy-dom ^15.0.0` added to `devDependencies`.
+
+### Decisions / deviations
+
+- **Linear-curve crossfade, not equal-power.** The README and 0.0.1 spec
+  described equal-power crossfade via AudioContext `linearRampToValueAtTime`.
+  However, Howler 2.x's `Howl.fade()` is a black-box ramp — it does not
+  expose the curve or schedule it on the AudioContext timeline directly. Wiring
+  `AudioContext.createGain()` + `linearRampToValueAtTime` would require
+  bypassing Howler's mixing layer and is architecturally out of scope for a
+  0.1.0 thin shell. **Shipping linear for 0.1.0; equal-power planned for
+  0.2.0** (will require a GainNode path alongside Howler's mix).
+- **Abort-during-crossfade resolves (not rejects).** Howler has no fade-cancel
+  API. Clearing the `setTimeout` and calling `resolve()` is the honest
+  maximum here. Documented in JSDoc.
+
 ## [0.0.1] - 2026-05-28
 
 ### Added (scaffold)

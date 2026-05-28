@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    environment: "happy-dom",
     clearMocks: true,
     restoreMocks: true,
     coverage: {
@@ -10,10 +11,10 @@ export default defineConfig({
       reporter: ["text", "lcov", "html"],
       include: ["src/**/*.ts"],
       thresholds: {
-        statements: 0,
-        branches: 0,
-        functions: 0,
-        lines: 0,
+        statements: 95,
+        branches: 90,
+        functions: 100,
+        lines: 100,
       },
     },
     typecheck: {

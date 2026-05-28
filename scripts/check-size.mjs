@@ -10,11 +10,10 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const budgets = {
-  // Scaffold-stage budget. The 0.1.0 target for the SHELL ALONE is ≤ 2 KB
-  // gzip. Howler.js (~9.7 KB gzip) is the user's peerDependency and is
-  // NOT counted here. The throw stub currently carries the full JSDoc
-  // surface; loose 3 KB ceiling until 0.1.0.
-  "dist/index.js": 3_000,
+  // 0.1.0 shell budget: ≤ 2 KB gzip. Howler.js (~9.7 KB gzip) is the
+  // user's peerDependency and is NOT counted here. tsup external: ["howler"]
+  // ensures Howler is never bundled into dist.
+  "dist/index.js": 2_000,
 };
 
 const failures = [];

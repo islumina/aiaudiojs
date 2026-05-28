@@ -23,7 +23,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
 
-> **Status: 0.0.1 scaffold.** API surface is frozen below; implementation lands in 0.1.0. `createAudio` currently throws `"not implemented"` on call.
+> **Status: 0.1.0 published.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade uses a linear-curve ramp in 0.1.0; equal-power is planned for 0.2.0.
 
 ---
 
@@ -39,8 +39,8 @@ So `aiaudiojs` is **the ai\*js-shaped audio handle**:
 
 - **Howler.js is a required peer dependency.** Users install both. The shell never bundles Howler.
 - **`dispose()` is idempotent everywhere.** Top-level `audio.disposeAll()` and per-sound `sound.dispose()` are both safe to call any number of times; subsequent operations throw `AudioDisposedError`.
-- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` cancels both ramps if the signal fires mid-fade.
-- **First-class `crossfade()`.** Equal-power dry/wet ramps scheduled on the AudioContext timeline (`linearRampToValueAtTime`), not `setInterval` polling — sample-accurate, audio-thread driven.
+- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` resolves early on abort (note: the underlying Howler fades cannot be cancelled mid-flight; they continue silently in the background, but the promise no longer blocks you).
+- **First-class `crossfade()`.** Delegates to `Howl.fade()` on both source and destination + a `setTimeout`-driven completion promise. The 0.1.0 implementation is a linear-curve fade; equal-power AudioContext-timeline ramping (`linearRampToValueAtTime`) is planned for 0.2.0 once we factor it out of Howler into a direct WebAudio gain-node bridge.
 - **Escape hatch via `sound.nativeHowl`.** When you need Howler's sprite API, custom HTML5 element, or any advanced feature the shell deliberately doesn't expose.
 - **iOS unlock retry on `visibilitychange`.** Best-effort fix for the "context suspends after background" pattern. Doesn't pretend to solve every WebKit bug.
 
@@ -92,7 +92,7 @@ audio.disposeAll(); // every sound this Audio created
 | iOS unlock on first user gesture                          | Solve WebKit bugs we don't own (#1744 etc.)           |
 | `load(url, signal)` with abort support                    | Worker-side audio decode (no `OfflineAudioContext`)   |
 | `play / pause / stop / fade` per Sound                    | Audio worklets / DSP graph composition                |
-| Equal-power `crossfade()` on timeline                     | MIDI / synth / oscillator-driven sound                |
+| `crossfade()` (linear curve in 0.1.0, equal-power in 0.2.0) | MIDI / synth / oscillator-driven sound              |
 | `dispose()` idempotent; post-dispose throws               | 3D spatial (use Howler's spatial plugin directly)     |
 | `sound.nativeHowl` escape hatch (readonly property)       | Sprite generator CLI (use `audiosprite`)              |
 | Howler as `peerDependency`                                | Bundling Howler (keep it in user's deps graph)        |
@@ -178,6 +178,53 @@ All notable changes to this project are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-05-28
+
+### Added
+
+- `createAudio({ autoUnlock?, volume?, resumeOnVisibility? })` — fully
+  implemented factory; closure-based `Audio` handle; all methods
+  destructurable without `this`.
+- `audio.unlock()` — resumes `Howler.ctx` (best-effort); idempotent; swallows
+  errors from already-running contexts.
+- `audio.load(url, signal?)` — wraps `new Howl({ src: [url], preload: true })`
+  in a `Promise`; resolves on `onload`, rejects with `AudioError` on
+  `loaderror`, rejects with `DOMException("AbortError")` if `signal` fires.
+- `audio.crossfade(from, to, { duration, signal? })` — linear-power crossfade
+  using `Howl.fade()` on both ramps; resolves after `durationMs` via
+  `setTimeout`. Aborting via `signal` clears the timer and resolves
+  immediately; the in-progress Howler fade continues silently (Howler 2.x has
+  no fade-cancel API). **Equal-power curve is planned for 0.2.0.**
+- `Sound.play(opts?)`, `.pause(id?)`, `.stop(id?)` — delegate to Howler;
+  `play` applies `volume`, `rate`, `loop` per-id and wires `signal` abort to
+  `stop(id)`.
+- `Sound.fade(from, to, ms, id?)` — delegates to `Howl.fade`; resolves after
+  `ms` via `setTimeout`.
+- `Sound.dispose()` / `Audio.dispose()` / `Audio.disposeAll()` — idempotent
+  teardown; cascade-disposes Sounds; removes all `document` listeners.
+- `sound.nativeHowl` — readonly escape hatch to the underlying `Howl`.
+- `audio.volume` getter/setter — clamps to `[0, 1]`; propagates to
+  `Howler.volume()`.
+- Coverage thresholds tightened to 95/90/100/100 with happy-dom + Howler mock.
+- Size budget tightened to 2 KB gzip (shell only; Howler stays external).
+- `tsup.config.ts` now sets `minify: true`.
+- `vitest.config.ts` now sets `environment: "happy-dom"`.
+- `happy-dom ^15.0.0` added to `devDependencies`.
+
+### Decisions / deviations
+
+- **Linear-curve crossfade, not equal-power.** The README and 0.0.1 spec
+  described equal-power crossfade via AudioContext `linearRampToValueAtTime`.
+  However, Howler 2.x's `Howl.fade()` is a black-box ramp — it does not
+  expose the curve or schedule it on the AudioContext timeline directly. Wiring
+  `AudioContext.createGain()` + `linearRampToValueAtTime` would require
+  bypassing Howler's mixing layer and is architecturally out of scope for a
+  0.1.0 thin shell. **Shipping linear for 0.1.0; equal-power planned for
+  0.2.0** (will require a GainNode path alongside Howler's mix).
+- **Abort-during-crossfade resolves (not rejects).** Howler has no fade-cancel
+  API. Clearing the `setTimeout` and calling `resolve()` is the honest
+  maximum here. Documented in JSDoc.
 
 ## [0.0.1] - 2026-05-28
 
