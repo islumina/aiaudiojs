@@ -1,0 +1,80 @@
+name: Publish to npm
+
+# Scaffold-stage trigger: `workflow_dispatch` only — no tag-push listener
+# because 0.0.x ships a `throw` stub and accidental publish would burn the
+# version on npm. Before the 0.1.0 publish, restore the tag-push trigger:
+#
+#   on:
+#     push:
+#       tags:
+#         - "v*"
+#     workflow_dispatch:
+#       inputs:
+#         dry_run: { description: "...", type: boolean, default: false }
+#
+# Authentication: npm Trusted Publishing via OIDC. The package's trusted
+# publisher must be configured on npmjs.com before the first real publish:
+#   Packages → aiaudiojs → Settings → Publishing access → Trusted publisher
+#   Repository:  yshengliao/aiaudiojs
+#   Workflow:    publish.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run npm publish in dry-run mode (no actual publish)"
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish (node 22)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm to a version that supports trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test with coverage thresholds
+        run: pnpm coverage
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify package exports
+        run: pnpm verify:exports
+
+      - name: Verify llms-full.txt is in sync
+        run: pnpm verify:llms
+
+      - name: Check bundle sizes
+        run: pnpm check:size
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: npm publish --dry-run
+
+      - name: Publish to npm via OIDC Trusted Publishing
+        if: ${{ inputs.dry_run != true }}
+        run: npm publish

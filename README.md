@@ -1,0 +1,155 @@
+# aiaudiojs
+
+[![npm version](https://img.shields.io/npm/v/aiaudiojs.svg)](https://www.npmjs.com/package/aiaudiojs)
+[![CI](https://github.com/yshengliao/aiaudiojs/actions/workflows/ci.yml/badge.svg)](https://github.com/yshengliao/aiaudiojs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
+[![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)](https://www.anthropic.com/claude-code)
+[![繁體中文](https://img.shields.io/badge/lang-繁體中文-red.svg)](README_ZHTW.md)
+
+> A thin Web Audio shell over [Howler.js](https://howlerjs.com/). Wraps `Howl` with `dispose()` idempotency, `AbortSignal` cancellation, first-class equal-power `crossfade()`, and the rest of the ai\*js conventions. Howler stays as a `peerDependency` and is reachable via `sound.nativeHowl` when you need its full surface.
+
+Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
+
+> **Status: 0.0.1 scaffold.** API surface is frozen below; implementation lands in 0.1.0. `createAudio` currently throws `"not implemented"` on call.
+
+---
+
+## Why aiaudiojs
+
+Web Audio on browsers is mature but the cliff is steep, and most of the cliff is iOS Safari. Howler.js has spent 13 years polishing the unlock flow, HTML5 fallback, sprite support, codec detection, and a global AudioContext lifecycle. Throwing that away to write our own is a bad trade. Three reasons to ship a shell instead (full evaluation in [LEARNINGS.md](../LEARNINGS.md)):
+
+- **Howler.js is MIT, 9.7 KB gzip, and already mature.** Even in its half-dormant 2024-onward state, the API is stable and the iOS unlock pipeline works for the happy path. Rewriting it from scratch would mean rediscovering the same edge cases.
+- **The iOS Safari edge cases are WebKit-bound.** iOS 17.4+ regressions on HTML5 streaming, iOS 18 VoiceOver / Audio Ducking quirks, the "5-second relock" — these are WebKit bugs, not Howler bugs. A clean-room reimplementation would catch the same bugs in the same situations.
+- **ai\*js conventions are what's missing, not the audio runtime.** `dispose()` idempotency, `AbortSignal` end-to-end, first-class `crossfade()` scheduled on the AudioContext timeline, named errors, typed events — these are 1.5–2 KB of shell code, not 10 KB of runtime.
+
+So `aiaudiojs` is **the ai\*js-shaped audio handle**:
+
+- **Howler.js is a required peer dependency.** Users install both. The shell never bundles Howler.
+- **`dispose()` is idempotent everywhere.** Top-level `audio.disposeAll()` and per-sound `sound.dispose()` are both safe to call any number of times; subsequent operations throw `AudioDisposedError`.
+- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` cancels both ramps if the signal fires mid-fade.
+- **First-class `crossfade()`.** Equal-power dry/wet ramps scheduled on the AudioContext timeline (`linearRampToValueAtTime`), not `setInterval` polling — sample-accurate, audio-thread driven.
+- **Escape hatch via `sound.nativeHowl`.** When you need Howler's sprite API, custom HTML5 element, or any advanced feature the shell deliberately doesn't expose.
+- **iOS unlock retry on `visibilitychange`.** Best-effort fix for the "context suspends after background" pattern. Doesn't pretend to solve every WebKit bug.
+
+What this is **not**: not a 3D spatial framework (Howler's spatial plugin exists; use it directly if you need it), not a synth / MIDI engine, not a sprite generator (use the `audiosprite` CLI), not an audio worklet host. The shell is deliberately narrow.
+
+---
+
+## Quick Start
+
+```bash
+pnpm add aiaudiojs howler
+```
+
+```typescript
+import { createAudio } from "aiaudiojs";
+
+const audio = createAudio({
+  autoUnlock: true,        // bind to first user gesture; default true
+  resumeOnVisibility: true, // best-effort iOS Safari recover
+});
+
+// 1. Load. Returns a Promise<Sound>; signal aborts mid-load.
+const zap = await audio.load("zap.mp3");
+const bgm1 = await audio.load("level1.mp3");
+const bgm2 = await audio.load("level2.mp3");
+
+// 2. Play. Returns Howler's sound id so you can target this instance later.
+const zapId = zap.play({ volume: 0.8 });
+bgm1.play({ loop: true });
+
+// 3. Crossfade between two loaded sounds — sample-accurate timeline ramp.
+await audio.crossfade(bgm1, bgm2, { duration: 2 });
+
+// 4. Escape hatch — reach into Howler for the advanced surface.
+const howl = zap.nativeHowl;
+howl.fade(1, 0, 500, zapId); // direct Howler call
+
+// 5. Tear down.
+audio.disposeAll(); // every sound this Audio created
+```
+
+---
+
+## Capabilities / Limitations
+
+| Will do (v1)                                              | Won't do                                              |
+| --------------------------------------------------------- | ----------------------------------------------------- |
+| `createAudio({ autoUnlock, volume, resumeOnVisibility })` | Multi-AudioContext orchestration (Safari caps at 4)   |
+| iOS unlock on first user gesture                          | Solve WebKit bugs we don't own (#1744 etc.)           |
+| `load(url, signal)` with abort support                    | Worker-side audio decode (no `OfflineAudioContext`)   |
+| `play / pause / stop / fade` per Sound                    | Audio worklets / DSP graph composition                |
+| Equal-power `crossfade()` on timeline                     | MIDI / synth / oscillator-driven sound                |
+| `dispose()` idempotent; post-dispose throws               | 3D spatial (use Howler's spatial plugin directly)     |
+| `sound.nativeHowl` escape hatch (readonly property)       | Sprite generator CLI (use `audiosprite`)              |
+| Howler as `peerDependency`                                | Bundling Howler (keep it in user's deps graph)        |
+
+---
+
+## API sketch
+
+```typescript
+import type { Howl } from "howler";
+
+interface AudioOptions {
+  autoUnlock?: boolean;        // default true
+  volume?: number;             // master, default 1
+  resumeOnVisibility?: boolean; // default true
+}
+
+interface PlayOptions {
+  volume?: number;
+  rate?: number;
+  loop?: boolean;
+  signal?: AbortSignal;
+}
+
+interface CrossfadeOptions {
+  duration: number;            // seconds
+  signal?: AbortSignal;
+}
+
+interface Sound {
+  play(opts?: PlayOptions): number;
+  pause(id?: number): void;
+  stop(id?: number): void;
+  fade(from: number, to: number, ms: number, id?: number): Promise<void>;
+  dispose(): void;
+  readonly nativeHowl: Howl;
+  readonly disposed: boolean;
+}
+
+interface Audio {
+  unlock(): Promise<void>;
+  load(url: string, signal?: AbortSignal): Promise<Sound>;
+  crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
+  volume: number;
+  dispose(): void;
+  disposeAll(): void;
+  readonly disposed: boolean;
+}
+
+class AudioError extends Error {}
+class AudioDisposedError extends Error {}
+
+function createAudio(opts?: AudioOptions): Audio;
+```
+
+Full JSDoc lives in [`src/index.ts`](src/index.ts).
+
+---
+
+## Roadmap
+
+| Version    | Adds                                                                                                                                |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **0.0.1**  | Scaffold landed — frozen API surface as a `throw` stub; full config + CI walk clean.                                                |
+| **0.1.0**  | First npm release. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` implemented. Shell ≤ 2 KB. |
+| **0.2.0**  | Sprite passthrough (typed wrapper over Howler's sprite API). Optional gapless looping helper.                                       |
+| **0.3+**   | TBD — driven by integration feedback (typed event channel via aieventjs?  iOS unlock heuristics improvements).                      |
+
+---
+
+## License
+
+[MIT](LICENSE). Howler.js is also [MIT](https://github.com/goldfire/howler.js/blob/master/LICENSE.md).

@@ -1,0 +1,5 @@
+# aiaudiojs
+
+> A thin Web Audio shell over Howler.js — dispose() idempotency, AbortSignal cancellation, first-class equal-power crossfade(), and the rest of the ai*js conventions. Howler stays as a peerDependency and is reachable via getNativeHowl() when you need its full surface. Part of the ai*js micro-runtime ecosystem.
+
+For the full LLM context (README + CHANGELOG + CONTRIBUTING concatenated), fetch [llms-full.txt](llms-full.txt).
