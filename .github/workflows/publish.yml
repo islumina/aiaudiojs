@@ -1,30 +1,29 @@
 name: Publish to npm
 
-# Scaffold-stage trigger: `workflow_dispatch` only — no tag-push listener
-# because 0.0.x ships a `throw` stub and accidental publish would burn the
-# version on npm. Before the 0.1.0 publish, restore the tag-push trigger:
+# Triggers on any pushed semver tag (v0.1.0, v0.1.1, etc.) — matches the
+# trigger pattern used by aifsmjs / aiecsjs / aibridgejs.
 #
-#   on:
-#     push:
-#       tags:
-#         - "v*"
-#     workflow_dispatch:
-#       inputs:
-#         dry_run: { description: "...", type: boolean, default: false }
-#
-# Authentication: npm Trusted Publishing via OIDC. The package's trusted
-# publisher must be configured on npmjs.com before the first real publish:
+# Authentication: npm Trusted Publishing via OIDC. Trusted publisher must
+# be configured on npmjs.com:
 #   Packages → aiaudiojs → Settings → Publishing access → Trusted publisher
 #   Repository:  yshengliao/aiaudiojs
 #   Workflow:    publish.yml
+#
+# Publishes with `--provenance` so the npm registry attaches a sigstore
+# attestation that the tarball was built by this workflow on this commit.
+#
+# Manual runs (e.g. dry-run validation) are still exposed via workflow_dispatch.
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Run npm publish in dry-run mode (no actual publish)"
         type: boolean
-        default: true
+        default: false
 
 jobs:
   publish:
@@ -73,8 +72,8 @@ jobs:
 
       - name: Publish (dry run)
         if: ${{ inputs.dry_run == true }}
-        run: npm publish --dry-run
+        run: npm publish --dry-run --provenance --access public
 
       - name: Publish to npm via OIDC Trusted Publishing
         if: ${{ inputs.dry_run != true }}
-        run: npm publish
+        run: npm publish --provenance --access public
