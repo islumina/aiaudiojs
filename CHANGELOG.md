@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-29
+
+Dependency-reduction cycle release. **No runtime API change** — `src/index.ts` is
+byte-identical to 0.3.0, so every existing `import` from `aiaudiojs` behaves exactly
+as before.
+
+### Changed (dependencies)
+
+- **`howler` stays a required `peerDependency` (`^2.2.4`).** As the only ai\*js package
+  with a runtime peer dependency, aiaudiojs is the flagship of the family v0.4.0
+  dependency-reduction cycle. The A / B / C decision was evaluated against the live
+  source: every public API — `load()` (`new Howl()`), `unlock()` (`Howler.ctx.resume()`),
+  `volume` (`Howler.volume()`), `play` / `pause` / `stop` / `fade`, and both crossfade
+  paths — is Howler-backed. There is **no Howler-free subset** to extract into a
+  lightweight subpath, and a from-scratch Web Audio shim would have to re-own the iOS
+  unlock / HTML5 fallback / sprite WebKit edge cases (and would not fit the 2 KB budget).
+  So howler stays — see ["Why aiaudiojs"](README.md#why-aiaudiojs) for the full
+  rationale. The honest dependency floor for this package is this one load-bearing peer.
+- **devDependencies confirmed aligned to the ai\*js family standard** (biome, @types/node,
+  @vitest/coverage-v8, tsup, tsx, typescript, vite, vitest, `pnpm@9.12.3`). `@types/howler`
+  and `happy-dom` remain aiaudiojs-specific (Howler types + DOM test environment).
+- **Lockfile deduped** (`pnpm dedupe`); **`pnpm audit` reports no known vulnerabilities**.
+  Maintainer-side supply-chain hygiene only — devDependency transitives are not shipped
+  to consumers.
+
+### Stability
+
+- **0.3.x crossfade surface frozen on the 1.0 track.** `crossfade('linear')` and
+  `crossfade('equal-power')` are stable and will not change shape before 1.0; once 1.0
+  ships they are frozen for the 1.x line. See [STABILITY.md](STABILITY.md).
+- Spatial audio (PannerNode / HRTF) remains **experimental**, deferred to v0.7; its API
+  surface is still undefined and nothing is implemented this cycle.
+
+### Decisions
+
+- **No runtime API addition.** This is a deliberate dependency-hygiene + stability-freeze
+  release, not a feature release. The family lands on a unified 0.4.0 version line; the
+  CHANGELOG is kept honest rather than padded with non-features.
+- **Direct 0.4.0 minor, no patch-step.** Patch-stepping is reserved for de-risking
+  changes that touch the public surface; this release touches none, so it lands straight
+  on 0.4.0.
+
 ## [0.3.0] - 2026-05-29
 
 ### Added

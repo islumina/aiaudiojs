@@ -10,7 +10,7 @@
 
 隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao) ─ 另見 [aifsmjs](https://github.com/yshengliao/aifsmjs)（FSM）、[aiecsjs](https://github.com/yshengliao/aiecsjs)（ECS）、[aibridgejs](https://github.com/yshengliao/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/yshengliao/aipooljs)（物件池）、[aiquadtreejs](https://github.com/yshengliao/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/yshengliao/aieventjs)（event emitter）。
 
-> **狀態：0.3.0 就緒（已 tag；經 OIDC 發佈中）。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。
+> **狀態：0.4.0。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.4.0 是降依賴 + stability-freeze release —— 相較 0.3.0 無 runtime API 變更，`howler` 維持 required peer dependency（見 [「為什麼有 aiaudiojs」](#為什麼有-aiaudiojs)）。
 
 ---
 
@@ -153,7 +153,8 @@ function createAudio(opts?: AudioOptions): Audio;
 | **0.1.0**  | 第一個 npm release。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 實作完。殼層 ≤ 2 KB。          |
 | **0.2.0**  | 跳號 ── 版號保留、無 release。對齊 v0.3 cross-package limitation cycle（所有兄弟套件同期發布 0.3.x）。                                   |
 | **0.3.0**  | Equal-power crossfade via `{ curve: 'equal-power' }` ── sin/cos 曲線直接排在各 sound 的 Web Audio `_node.gain`（`setValueCurveAtTime`）；64-sample 曲線；`STABILITY.md`。維持在 2 KB gzip 殼層 budget 內。 |
-| **0.4+**   | TBD ── 由整合回饋驅動（typed event channel 接 aieventjs？iOS unlock heuristic 改進？）。                                                 |
+| **0.4.0**  | 降依賴 cycle。`howler` 維持 required peer dependency ── 沒有 howler-free 的 core 可拆（見 [「為什麼有 aiaudiojs」](#為什麼有-aiaudiojs)）；devDependencies 對齊 ai\*js 家族、lockfile deduped、`pnpm audit` clean。Stability freeze：0.3.x surface 凍結於 1.0 track。無 runtime API 變更。 |
+| **0.5+**   | TBD ── 由 v0.5 shmup 整合回饋驅動（stage→boss equal-power BGM crossfade + heavy SFX）。Spatial audio（PannerNode / HRTF）為 experimental，鎖定 v0.7。                                                 |
 
 ---
 

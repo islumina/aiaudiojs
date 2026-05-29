@@ -10,7 +10,7 @@
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
 
-> **Status: 0.3.0 ready (tagged; publishing via OIDC).** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`.
+> **Status: 0.4.0.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.4.0 is a dependency-hygiene + stability-freeze release — no runtime API change from 0.3.0, and `howler` stays a required peer dependency (see ["Why aiaudiojs"](#why-aiaudiojs)).
 
 ---
 
@@ -153,7 +153,8 @@ Full JSDoc lives in [`src/index.ts`](src/index.ts).
 | **0.1.0**  | First npm release. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` implemented. Shell ≤ 2 KB. |
 | **0.2.0**  | Skipped — version number reserved; no release. Aligns with the v0.3 cross-package limitation cycle (all sibling packages ship 0.3.x simultaneously). |
 | **0.3.0**  | Equal-power crossfade via `{ curve: 'equal-power' }` — sin/cos curves scheduled directly on each sound's Web Audio `_node.gain` (`setValueCurveAtTime`); 64-sample curves; `STABILITY.md`. Stays within the 2 KB gzip shell budget. |
-| **0.4+**   | TBD — driven by integration feedback (typed event channel via aieventjs? iOS unlock heuristics improvements).                       |
+| **0.4.0**  | Dependency-reduction cycle. `howler` stays a required peer dependency — there is no Howler-free core to extract (see ["Why aiaudiojs"](#why-aiaudiojs)); devDependencies aligned to the ai\*js family, lockfile deduped, `pnpm audit` clean. Stability freeze: the 0.3.x surface is frozen on the 1.0 track. No runtime API change. |
+| **0.5+**   | TBD — driven by v0.5 shmup integration feedback (stage→boss equal-power BGM crossfade + heavy SFX). Spatial audio (PannerNode / HRTF) is experimental, targeted at v0.7.                       |
 
 ---
 
