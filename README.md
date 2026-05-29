@@ -16,7 +16,7 @@ Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — 
 
 ## Why aiaudiojs
 
-Web Audio on browsers is mature but the cliff is steep, and most of the cliff is iOS Safari. Howler.js has spent 13 years polishing the unlock flow, HTML5 fallback, sprite support, codec detection, and a global AudioContext lifecycle. Throwing that away to write our own is a bad trade. Three reasons to ship a shell instead (full evaluation in [LEARNINGS.md](../LEARNINGS.md)):
+Web Audio on browsers is mature but the cliff is steep, and most of the cliff is iOS Safari. Howler.js has spent 13 years polishing the unlock flow, HTML5 fallback, sprite support, codec detection, and a global AudioContext lifecycle. Throwing that away to write our own is a bad trade. Three reasons to ship a shell instead:
 
 - **Howler.js is MIT, 9.7 KB gzip, and already mature.** Even in its half-dormant 2024-onward state, the API is stable and the iOS unlock pipeline works for the happy path. Rewriting it from scratch would mean rediscovering the same edge cases.
 - **The iOS Safari edge cases are WebKit-bound.** iOS 17.4+ regressions on HTML5 streaming, iOS 18 VoiceOver / Audio Ducking quirks, the "5-second relock" — these are WebKit bugs, not Howler bugs. A clean-room reimplementation would catch the same bugs in the same situations.

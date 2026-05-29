@@ -16,7 +16,7 @@
 
 ## 為什麼有 aiaudiojs
 
-瀏覽器的 Web Audio 已經成熟，但門檻很陡 ── 而那道陡坡大部分是 iOS Safari。Howler.js 花了 13 年把 unlock flow、HTML5 fallback、sprite、codec 偵測、全域 AudioContext 生命週期磨光滑。把它丟掉自己寫，是個壞 trade。三個理由（完整評估在 [LEARNINGS.md](../LEARNINGS.md)）：
+瀏覽器的 Web Audio 已經成熟，但門檻很陡 ── 而那道陡坡大部分是 iOS Safari。Howler.js 花了 13 年把 unlock flow、HTML5 fallback、sprite、codec 偵測、全域 AudioContext 生命週期磨光滑。把它丟掉自己寫，是個壞 trade。三個理由：
 
 - **Howler.js 是 MIT、9.7 KB gzip、已經夠成熟。** 即使是 2024 後半休眠狀態，API 已經穩定、iOS unlock pipeline 對 happy path 也工作。從零重寫只是重新發現同樣 edge case 而已。
 - **iOS Safari 的 edge case 是 WebKit 病。** iOS 17.4+ 對 HTML5 streaming 的 regression、iOS 18 VoiceOver / Audio Ducking 詭異情境、「5 秒重新鎖定」── 這些是 WebKit bug，不是 Howler bug。clean-room 重寫只是在相同情況踩相同雷。
