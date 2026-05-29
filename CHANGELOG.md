@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-29
+
+### Added
+
+- **`CrossfadeCurve` type** — `'linear' | 'equal-power'` exported from `aiaudiojs`.
+- **`CrossfadeOptions.curve?`** — optional fade-curve selector. Default `'linear'` preserves 0.1.1 behaviour byte-for-byte for every existing caller.
+- **equal-power crossfade path** — `crossfade({ curve: 'equal-power' })` schedules perceptually-flat sin/cos ramps (scaled by master volume) **directly on each sound's Web Audio GainNode** (`_node.gain`) via `setValueCurveAtTime`: the outgoing sound follows `cos` (mv → 0), the incoming follows `sin` (0 → mv), so `sin² + cos² = 1` holds the perceived loudness flat through the transition. `Howl.fade()` is NOT invoked in this path. Terminal state matches the linear path (outgoing at 0, incoming at master volume).
+- **64-sample sin/cos curves** — built lazily on first equal-power call, shared as module-scope `Float32Array` singletons across all `Audio` instances.
+- **`STABILITY.md`** — new file documenting stability guarantees per feature.
+
+### Decisions
+
+- **0.2.0 version skipped.** This release is tagged `0.3.0` to align with the cross-package `v0.3.x` limitation cycle. All sibling packages (`aifsmjs`, `aiecsjs`, `aibridgejs`, `aieventjs`, `aipooljs`, `aiquadtreejs`) are simultaneously shipping 0.3.x. Shipping `0.2.0` in isolation would break the ecosystem's unified versioning signal.
+- **Backward compatibility.** Not passing `curve` (or passing `curve: 'linear'`) routes to the original linear path — code is byte-identical to 0.1.1. No existing caller is affected.
+- **Scheduled on Howler's own per-sound GainNode, not an overlay.** Howler routes each Web Audio sound as `bufferSource → sound._node (GainNode) → Howler.masterGain`, so `_node.gain` already is the per-sound volume param. The equal-power path schedules the sin/cos curve straight onto it — the same node Howler's own `fade()` uses — rather than inserting and re-routing additional GainNodes. This keeps the shell inside its original **2 KB gzip budget** (no bump needed) and avoids any routing teardown.
+- **Three pre-release defects caught and fixed (never shipped).** An earlier overlay design (insert `gainA`/`gainB`, re-route `_node` through them) was found — verified against Howler's source — to be broken three ways: (1) the incoming track was double-attenuated to permanent silence (`to.play({volume:0})` upstream of the overlay), (2) the outgoing track jumped back to full volume when routing was restored, and (3) `from` was re-played, layering a duplicate voice. Scheduling directly on `_node.gain` (above) is correct by construction and eliminates all three.
+- **`Howl.fade()` not called in equal-power path.** The two curve paths are mutually exclusive; equal-power owns the gain schedule for the duration of the crossfade.
+
 ## [0.1.1] - 2026-05-28
 
 ### Changed (CI)

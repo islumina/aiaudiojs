@@ -10,9 +10,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const budgets = {
-  // 0.1.0 shell budget: ≤ 2 KB gzip. Howler.js (~9.7 KB gzip) is the
-  // user's peerDependency and is NOT counted here. tsup external: ["howler"]
-  // ensures Howler is never bundled into dist.
+  // 0.1.0 shell budget: ≤ 2 KB gzip — held through 0.3.0. The equal-power
+  // crossfade path schedules sin/cos curves directly on Howler's existing
+  // per-sound GainNode (`_node.gain`) rather than inserting overlay GainNodes,
+  // so it fits inside the original budget. Howler.js (~9.7 KB gzip) stays as
+  // the user's peerDependency and is NOT counted here (`external: ["howler"]`
+  // in tsup.config.ts).
   "dist/index.js": 2_000,
 };
 

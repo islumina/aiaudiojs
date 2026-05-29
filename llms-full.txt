@@ -23,7 +23,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
 
-> **Status: 0.1.0 published.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade uses a linear-curve ramp in 0.1.0; equal-power is planned for 0.2.0.
+> **Status: 0.3.0 ready (tagged; publishing via OIDC).** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`.
 
 ---
 
@@ -33,14 +33,14 @@ Web Audio on browsers is mature but the cliff is steep, and most of the cliff is
 
 - **Howler.js is MIT, 9.7 KB gzip, and already mature.** Even in its half-dormant 2024-onward state, the API is stable and the iOS unlock pipeline works for the happy path. Rewriting it from scratch would mean rediscovering the same edge cases.
 - **The iOS Safari edge cases are WebKit-bound.** iOS 17.4+ regressions on HTML5 streaming, iOS 18 VoiceOver / Audio Ducking quirks, the "5-second relock" — these are WebKit bugs, not Howler bugs. A clean-room reimplementation would catch the same bugs in the same situations.
-- **ai\*js conventions are what's missing, not the audio runtime.** `dispose()` idempotency, `AbortSignal` end-to-end, first-class `crossfade()` scheduled on the AudioContext timeline, named errors, typed events — these are 1.5–2 KB of shell code, not 10 KB of runtime.
+- **ai\*js conventions are what's missing, not the audio runtime.** `dispose()` idempotency, `AbortSignal` end-to-end, first-class `crossfade()` scheduled on the AudioContext timeline, named errors, typed events — these are ~2 KB of shell code, not 10 KB of runtime.
 
 So `aiaudiojs` is **the ai\*js-shaped audio handle**:
 
 - **Howler.js is a required peer dependency.** Users install both. The shell never bundles Howler.
 - **`dispose()` is idempotent everywhere.** Top-level `audio.disposeAll()` and per-sound `sound.dispose()` are both safe to call any number of times; subsequent operations throw `AudioDisposedError`.
-- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` resolves early on abort (note: the underlying Howler fades cannot be cancelled mid-flight; they continue silently in the background, but the promise no longer blocks you).
-- **First-class `crossfade()`.** Delegates to `Howl.fade()` on both source and destination + a `setTimeout`-driven completion promise. The 0.1.0 implementation is a linear-curve fade; equal-power AudioContext-timeline ramping (`linearRampToValueAtTime`) is planned for 0.2.0 once we factor it out of Howler into a direct WebAudio gain-node bridge.
+- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` resolves early on abort. On the default linear curve the underlying `Howl.fade()` ramps cannot be cancelled mid-flight (they continue silently; the promise just stops blocking you); the `equal-power` curve schedules on the AudioContext timeline and DOES cancel the in-flight ramp on abort (`cancelScheduledValues` then `setValueAtTime`).
+- **First-class `crossfade()`.** Defaults to a linear-curve fade via `Howl.fade()`. Opt in to equal-power — a perceptually-flat sin/cos ramp on the `AudioContext` timeline via `GainNode.gain.setValueCurveAtTime` — with `{ curve: 'equal-power' }`, shipped in 0.3.0.
 - **Escape hatch via `sound.nativeHowl`.** When you need Howler's sprite API, custom HTML5 element, or any advanced feature the shell deliberately doesn't expose.
 - **iOS unlock retry on `visibilitychange`.** Best-effort fix for the "context suspends after background" pattern. Doesn't pretend to solve every WebKit bug.
 
@@ -71,8 +71,11 @@ const bgm2 = await audio.load("level2.mp3");
 const zapId = zap.play({ volume: 0.8 });
 bgm1.play({ loop: true });
 
-// 3. Crossfade between two loaded sounds — sample-accurate timeline ramp.
+// 3. Crossfade between two loaded sounds. Default curve is linear via
+//    Howl.fade() on both ramps; pass `curve: 'equal-power'` for a
+//    perceptually-flat sin/cos schedule on the AudioContext timeline.
 await audio.crossfade(bgm1, bgm2, { duration: 2 });
+await audio.crossfade(bgm1, bgm2, { duration: 2, curve: "equal-power" });
 
 // 4. Escape hatch — reach into Howler for the advanced surface.
 const howl = zap.nativeHowl;
@@ -92,7 +95,7 @@ audio.disposeAll(); // every sound this Audio created
 | iOS unlock on first user gesture                          | Solve WebKit bugs we don't own (#1744 etc.)           |
 | `load(url, signal)` with abort support                    | Worker-side audio decode (no `OfflineAudioContext`)   |
 | `play / pause / stop / fade` per Sound                    | Audio worklets / DSP graph composition                |
-| `crossfade()` (linear curve in 0.1.0, equal-power in 0.2.0) | MIDI / synth / oscillator-driven sound              |
+| `crossfade()` (linear default + equal-power opt-in)         | MIDI / synth / oscillator-driven sound              |
 | `dispose()` idempotent; post-dispose throws               | 3D spatial (use Howler's spatial plugin directly)     |
 | `sound.nativeHowl` escape hatch (readonly property)       | Sprite generator CLI (use `audiosprite`)              |
 | Howler as `peerDependency`                                | Bundling Howler (keep it in user's deps graph)        |
@@ -117,9 +120,12 @@ interface PlayOptions {
   signal?: AbortSignal;
 }
 
+type CrossfadeCurve = "linear" | "equal-power";
+
 interface CrossfadeOptions {
   duration: number;            // seconds
   signal?: AbortSignal;
+  curve?: CrossfadeCurve;      // default "linear" (backward-compat)
 }
 
 interface Sound {
@@ -158,8 +164,9 @@ Full JSDoc lives in [`src/index.ts`](src/index.ts).
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **0.0.1**  | Scaffold landed — frozen API surface as a `throw` stub; full config + CI walk clean.                                                |
 | **0.1.0**  | First npm release. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` implemented. Shell ≤ 2 KB. |
-| **0.2.0**  | Sprite passthrough (typed wrapper over Howler's sprite API). Optional gapless looping helper.                                       |
-| **0.3+**   | TBD — driven by integration feedback (typed event channel via aieventjs?  iOS unlock heuristics improvements).                      |
+| **0.2.0**  | Skipped — version number reserved; no release. Aligns with the v0.3 cross-package limitation cycle (all sibling packages ship 0.3.x simultaneously). |
+| **0.3.0**  | Equal-power crossfade via `{ curve: 'equal-power' }` — sin/cos curves scheduled directly on each sound's Web Audio `_node.gain` (`setValueCurveAtTime`); 64-sample curves; `STABILITY.md`. Stays within the 2 KB gzip shell budget. |
+| **0.4+**   | TBD — driven by integration feedback (typed event channel via aieventjs? iOS unlock heuristics improvements).                       |
 
 ---
 
@@ -178,6 +185,24 @@ All notable changes to this project are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-05-29
+
+### Added
+
+- **`CrossfadeCurve` type** — `'linear' | 'equal-power'` exported from `aiaudiojs`.
+- **`CrossfadeOptions.curve?`** — optional fade-curve selector. Default `'linear'` preserves 0.1.1 behaviour byte-for-byte for every existing caller.
+- **equal-power crossfade path** — `crossfade({ curve: 'equal-power' })` schedules perceptually-flat sin/cos ramps (scaled by master volume) **directly on each sound's Web Audio GainNode** (`_node.gain`) via `setValueCurveAtTime`: the outgoing sound follows `cos` (mv → 0), the incoming follows `sin` (0 → mv), so `sin² + cos² = 1` holds the perceived loudness flat through the transition. `Howl.fade()` is NOT invoked in this path. Terminal state matches the linear path (outgoing at 0, incoming at master volume).
+- **64-sample sin/cos curves** — built lazily on first equal-power call, shared as module-scope `Float32Array` singletons across all `Audio` instances.
+- **`STABILITY.md`** — new file documenting stability guarantees per feature.
+
+### Decisions
+
+- **0.2.0 version skipped.** This release is tagged `0.3.0` to align with the cross-package `v0.3.x` limitation cycle. All sibling packages (`aifsmjs`, `aiecsjs`, `aibridgejs`, `aieventjs`, `aipooljs`, `aiquadtreejs`) are simultaneously shipping 0.3.x. Shipping `0.2.0` in isolation would break the ecosystem's unified versioning signal.
+- **Backward compatibility.** Not passing `curve` (or passing `curve: 'linear'`) routes to the original linear path — code is byte-identical to 0.1.1. No existing caller is affected.
+- **Scheduled on Howler's own per-sound GainNode, not an overlay.** Howler routes each Web Audio sound as `bufferSource → sound._node (GainNode) → Howler.masterGain`, so `_node.gain` already is the per-sound volume param. The equal-power path schedules the sin/cos curve straight onto it — the same node Howler's own `fade()` uses — rather than inserting and re-routing additional GainNodes. This keeps the shell inside its original **2 KB gzip budget** (no bump needed) and avoids any routing teardown.
+- **Three pre-release defects caught and fixed (never shipped).** An earlier overlay design (insert `gainA`/`gainB`, re-route `_node` through them) was found — verified against Howler's source — to be broken three ways: (1) the incoming track was double-attenuated to permanent silence (`to.play({volume:0})` upstream of the overlay), (2) the outgoing track jumped back to full volume when routing was restored, and (3) `from` was re-played, layering a duplicate voice. Scheduling directly on `_node.gain` (above) is correct by construction and eliminates all three.
+- **`Howl.fade()` not called in equal-power path.** The two curve paths are mutually exclusive; equal-power owns the gain schedule for the duration of the crossfade.
 
 ## [0.1.1] - 2026-05-28
 
