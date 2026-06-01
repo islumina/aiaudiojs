@@ -164,6 +164,16 @@ export interface Audio {
    * fires; rejects with {@link AudioError} on load failure or with the
    * standard `AbortError` if `signal` aborts mid-load.
    *
+   * @remarks
+   * **F3 — abort racing decode completion:** If `signal` aborts while a load is
+   * in flight, `load()` rejects with `AbortError` and unloads the Howl. The
+   * abort listener is removed once the `load` event fires, so aborting *after*
+   * the load resolves is a no-op. In the narrow case where Howler still emits
+   * its internal `load` event *after* an abort has already rejected (the decode
+   * was already in-flight), a `Sound` is briefly added to the internal set and
+   * then reclaimed by the next {@link disposeAll}. Call {@link disposeAll} if
+   * you abort a load whose completion you cannot guarantee.
+   *
    * @security The `url` parameter is passed directly to `new Howl({ src: [url] })`,
    * which forwards it to `Audio.src` (HTML5 mode) or `XMLHttpRequest.open`
    * (Web Audio decode). Any URL the caller passes is trusted. If you accept
@@ -180,6 +190,28 @@ export interface Audio {
    * Howler ramp (both continue silently). Opt-in `curve: 'equal-power'` (0.3.0)
    * schedules sin/cos ramps on the AudioContext via `setValueCurveAtTime`,
    * preserving perceptual loudness; abort cancels the schedule cleanly.
+   *
+   * **F2 — concurrent crossfades on the same Sound:** Once a new `crossfade()`
+   * starts on a `Sound`, any `AbortController` that was issued for a *previous*
+   * crossfade on that same Sound **must not be fired** after the new crossfade
+   * begins. Aborting the old controller would call `cancelScheduledValues` and
+   * `setValueAtTime` on the GainNode, overwriting the ramp the new crossfade just
+   * scheduled. Each crossfade owns its abort signal exclusively; the caller is
+   * responsible for retiring old controllers before starting a new crossfade.
+   *
+   * **F5 — equal-power assumes `from` is at masterVolume:** The equal-power path
+   * starts the `cos` ramp from the current masterVolume, not from a per-instance
+   * override. If `from` was started with a different volume (e.g.
+   * `from.play({ volume: 0.5 })`), the initial gain will snap to masterVolume at
+   * the start of the crossfade, which may produce an audible click. For a
+   * click-free transition, ensure `from` is playing at masterVolume before calling
+   * `crossfade({ curve: 'equal-power' })`.
+   *
+   * **F9 — rampSound throwing mid-crossfade:** If the AudioParam scheduling calls
+   * throw (e.g. the context is closed unexpectedly mid-crossfade), the `to` sound
+   * may be left running at its scheduled volume with no further ramp applied. This
+   * is a known defensive edge case; callers may handle it by catching the thrown
+   * `AudioError` and calling `to.stop()` explicitly.
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
 
@@ -305,6 +337,11 @@ function clamp(v: number): number {
 
 class SoundImpl implements Sound {
   private _disposed = false;
+  // Active play() abort-cleanups. Run on dispose() so that a still-live user
+  // AbortSignal does not retain the abort listener (and the Howl it closes
+  // over) after the sound is unloaded. Howler emits no 'unload' event, so
+  // unload() alone cannot trigger these — dispose() must invoke them.
+  private readonly _abortCleanups = new Set<() => void>();
 
   constructor(
     private readonly howl: Howl,
@@ -334,11 +371,34 @@ class SoundImpl implements Sound {
       if (signal.aborted) {
         this.howl.stop(id);
       } else {
-        const onAbort = (): void => {
-          this.howl.stop(id);
-          signal.removeEventListener("abort", onAbort);
+        // Capture howl in a local so cleanup closures are self-contained.
+        const howl = this.howl;
+        let onAbort: (() => void) | undefined;
+
+        // Remove the abort listener and detach howl event listeners.
+        const cleanup = (): void => {
+          if (onAbort !== undefined) {
+            signal.removeEventListener("abort", onAbort);
+            onAbort = undefined;
+          }
+          howl.off("end", onEnd, id);
+          howl.off("stop", onStop, id);
+          this._abortCleanups.delete(cleanup);
         };
-        signal.addEventListener("abort", onAbort);
+
+        // Howler per-id end/stop callbacks — natural sound termination.
+        const onEnd = (_id: number): void => cleanup();
+        const onStop = (_id: number): void => cleanup();
+
+        onAbort = (): void => {
+          howl.stop(id);
+          cleanup();
+        };
+
+        signal.addEventListener("abort", onAbort, { once: true });
+        howl.on("end", onEnd, id);
+        howl.on("stop", onStop, id);
+        this._abortCleanups.add(cleanup);
       }
     }
     return id;
@@ -369,6 +429,12 @@ class SoundImpl implements Sound {
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    // Run pending play() abort-cleanups before unloading: Howler has no
+    // 'unload' event, so otherwise a still-live user signal would retain the
+    // abort listener (and this Howl via its closure). Each cleanup() removes
+    // itself from the set, so iterate a snapshot.
+    for (const c of [...this._abortCleanups]) c();
+    this._abortCleanups.clear();
     this.howl.unload();
     this.state.sounds.delete(this);
   }

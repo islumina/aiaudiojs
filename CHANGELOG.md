@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **play() AbortSignal listener leak** — The `onAbort` listener added to `signal` in
+  `Sound.play()` is now removed on natural sound end and on `stop` (Howler `end`/`stop`
+  per-id events), not only when the signal fires. `{ once: true }` is also applied to
+  the `addEventListener` call. Reusing a long-lived `AbortController` across many
+  `play()` calls no longer accumulates listeners on the signal.
+
+### Added
+
+- **play() leak tests (D8, D9)** — Two new unit tests verify that after a play() whose
+  sound ends or stops naturally (without the signal firing), no abort listener remains
+  on the signal and a subsequent `.abort()` is a silent no-op.
+- **visibilitychange-hidden test (A9)** — New test confirms that `visibilitychange` when
+  the page is `hidden` does NOT call `Howler.ctx.resume()` (only `visible` should).
+- **Multi-voice from test (G1)** — New equal-power test confirms that when `from` has
+  two concurrent active voices, both are ramped by the crossfade.
+- **fast-check upgraded to ^4.8.0** — Updated from ^3.23.0; all 61 tests remain green.
+  No test-code changes required (fc API used — `fc.assert`, `fc.asyncProperty`,
+  `fc.double` — is unchanged between v3 and v4).
+
+### Changed (JSDoc / contract clarifications — no behavior change)
+
+- **`Audio.load()` — F3 limitation documented:** abort after Howler's decode completes
+  leaves a briefly-registered Sound that `disposeAll()` will reclaim; documented in
+  JSDoc with guidance.
+- **`Audio.crossfade()` — F2, F5, F9 contracts documented:**
+  - F2: concurrent crossfades on the same Sound — old `AbortController` must not be
+    fired once a new crossfade starts, or it overwrites the new schedule.
+  - F5: equal-power crossfade assumes `from` is playing at masterVolume; a per-instance
+    volume override causes a gain snap/click at the start.
+  - F9: `rampSound` throwing mid-crossfade leaves `to` running silently — noted as a
+    known defensive edge case.
+
 ## [0.4.0] - 2026-05-29
 
 Dependency-reduction cycle release. **No runtime API change** — `src/index.ts` is

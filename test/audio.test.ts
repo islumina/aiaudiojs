@@ -14,8 +14,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 type AnyFn = (...args: unknown[]) => void;
 
 vi.mock("howler", () => {
-  // Per-instance event handlers
+  // Per-instance event handlers (once-fired: keyed by event name)
   const handlers = new Map<object, Map<string, AnyFn>>();
+  // Per-instance repeating event listeners (keyed by event name, array per id)
+  const listeners = new Map<object, Map<string, Map<number | undefined, AnyFn[]>>>();
   let nextSoundId = 1;
   let mockShouldLoadFail = false;
 
@@ -25,6 +27,7 @@ vi.mock("howler", () => {
     constructor(opts: { src: string[]; preload?: boolean }) {
       this.opts = opts;
       handlers.set(this, new Map());
+      listeners.set(this, new Map());
       // Auto-fire load / loaderror on the next microtask.
       Promise.resolve().then(() => {
         const map = handlers.get(this);
@@ -37,6 +40,50 @@ vi.mock("howler", () => {
 
     once(event: string, cb: AnyFn): void {
       handlers.get(this)?.set(event, cb);
+    }
+
+    on(event: string, cb: AnyFn, id?: number): void {
+      const evMap = listeners.get(this);
+      if (evMap === undefined) return;
+      if (!evMap.has(event)) evMap.set(event, new Map());
+      const idMap = evMap.get(event)!;
+      const key = id;
+      if (!idMap.has(key)) idMap.set(key, []);
+      idMap.get(key)!.push(cb);
+    }
+
+    off(event: string, cb?: AnyFn, id?: number): void {
+      const evMap = listeners.get(this);
+      if (evMap === undefined) return;
+      const idMap = evMap.get(event);
+      if (idMap === undefined) return;
+      const key = id;
+      if (cb === undefined) {
+        idMap.delete(key);
+        return;
+      }
+      const arr = idMap.get(key);
+      if (arr === undefined) return;
+      const idx = arr.indexOf(cb);
+      if (idx !== -1) arr.splice(idx, 1);
+    }
+
+    /** Test helper: emit an event (end or stop) for a specific sound id. */
+    __emit(event: string, id: number): void {
+      const evMap = listeners.get(this);
+      if (evMap === undefined) return;
+      const idMap = evMap.get(event);
+      if (idMap === undefined) return;
+      // Fire listeners registered for this exact id.
+      const arr = idMap.get(id);
+      if (arr !== undefined) {
+        for (const cb of [...arr]) cb(id);
+      }
+      // Also fire wildcard listeners (no id).
+      const wildArr = idMap.get(undefined);
+      if (wildArr !== undefined) {
+        for (const cb of [...wildArr]) cb(id);
+      }
     }
 
     play(): number {
@@ -203,6 +250,18 @@ describe("A. createAudio / lifecycle", () => {
     expect(getMockCtx().resume).toHaveBeenCalled();
     audio.dispose();
   });
+
+  it("A9. visibilitychange when hidden does NOT call resume", () => {
+    const audio = createAudio({ autoUnlock: false, resumeOnVisibility: true });
+    // Simulate the page being hidden (e.g. user switches tab or backgrounds the app).
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    // resume must NOT be called when the page is hidden — only on visible.
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    // Restore to visible so subsequent tests are unaffected.
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    audio.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -319,6 +378,55 @@ describe("D. Sound.play / pause / stop", () => {
     audio.dispose();
   });
 
+  it("D8. play({ signal }) — no abort listener remains after sound ends naturally; abort afterward is a no-op", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    const id = sound.play({ signal: ctrl.signal });
+
+    // Simulate the sound ending naturally by firing the 'end' event.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    // The abort listener must have been removed.
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    // Aborting afterward must NOT call stop() again.
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D9. play({ signal }) — no abort listener remains after sound stops; abort afterward is a no-op", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    const id = sound.play({ signal: ctrl.signal });
+
+    // Simulate an external stop by firing the 'stop' event.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit(
+      "stop",
+      id,
+    );
+
+    // The abort listener must have been removed.
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    // Aborting afterward must NOT call stop() again.
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
   it("D4. pause / stop delegate to Howler", async () => {
     const audio = createAudio({ autoUnlock: false });
     const sound = await audio.load("test.mp3");
@@ -409,6 +517,21 @@ describe("F. Sound.dispose", () => {
     s1.dispose();
     expect(s1.disposed).toBe(true);
     expect(s2.disposed).toBe(false);
+    audio.dispose();
+  });
+
+  it("F3. dispose() detaches a pending play() abort listener (no leak)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ac = new AbortController();
+    const removeSpy = vi.spyOn(ac.signal, "removeEventListener");
+    sound.play({ signal: ac.signal });
+    expect(removeSpy).not.toHaveBeenCalled();
+    sound.dispose();
+    // Howler has no 'unload' event, so dispose() must invoke the play()
+    // cleanup explicitly — otherwise the abort listener (and the Howl it
+    // closes over) would leak on the still-live user signal.
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
     audio.dispose();
   });
 });

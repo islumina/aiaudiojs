@@ -16,7 +16,11 @@ const budgets = {
   // so it fits inside the original budget. Howler.js (~9.7 KB gzip) stays as
   // the user's peerDependency and is NOT counted here (`external: ["howler"]`
   // in tsup.config.ts).
-  "dist/index.js": 2_000,
+  //
+  // 0.5.0: bumped 2000 → 2100 B. The play() AbortSignal listener-leak fix
+  // adds a cleanup closure + two Howler per-id event-listener pairs (end/stop),
+  // which are real runtime code. The shell remains well under 3 KB gzip.
+  "dist/index.js": 2_100,
 };
 
 const failures = [];

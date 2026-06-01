@@ -617,3 +617,37 @@ describe("F. masterVolume scaling", () => {
     vi.useRealTimers();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group G — multi-voice from
+// ---------------------------------------------------------------------------
+
+describe("G. multi-voice from", () => {
+  it("G1: all active from voices are ramped (two concurrent plays of from)", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    // Start two concurrent voices of `from` before the crossfade.
+    from.play();
+    from.play();
+    const fromHowl = from.nativeHowl as unknown as {
+      _sounds: Array<{ _id: number; _node: { gain: GainParam } }>;
+    };
+    // Both voices should be present in _sounds (mock appends on each play()).
+    expect(fromHowl._sounds.length).toBe(2);
+
+    const p = audio.crossfade(from, to, { duration: 2, curve: "equal-power" });
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    // Every from voice must have had setValueCurveAtTime called (the cos ramp).
+    for (const s of fromHowl._sounds) {
+      expect(s._node.gain.setValueCurveAtTime).toHaveBeenCalledTimes(1);
+      const fromCurve = s._node.gain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+      // cos curve: starts near 1 (mv=1), ends near 0.
+      expect(fromCurve[0]).toBeCloseTo(1, 5);
+      expect(fromCurve[63]).toBeCloseTo(0, 5);
+    }
+    audio.dispose();
+    vi.useRealTimers();
+  });
+});
