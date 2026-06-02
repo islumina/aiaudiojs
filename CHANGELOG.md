@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-02
+
 ### Fixed
 
 - **play() AbortSignal listener leak** — The `onAbort` listener added to `signal` in
