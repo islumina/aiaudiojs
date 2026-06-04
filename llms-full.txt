@@ -23,7 +23,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
 
-> **Status: 0.4.0.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.4.0 is a dependency-hygiene + stability-freeze release — no runtime API change from 0.3.0, and `howler` stays a required peer dependency (see ["Why aiaudiojs"](#why-aiaudiojs)).
+> **Status: 0.5.1.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.5.1 fixes the `play()` AbortSignal listener leak (listeners are now removed on natural end/stop as well as on abort). See CHANGELOG for details.
 
 ---
 
@@ -454,11 +454,12 @@ Key invariants:
 - `dispose()` is idempotent at both the Audio and Sound levels.
 - Every long-running operation accepts an `AbortSignal`; aborting cancels
   in-flight work and rejects pending promises with the standard `AbortError`.
-- `crossfade()` ramps run on the AudioContext timeline
-  (`linearRampToValueAtTime`), never via `setInterval` polling.
+- `crossfade()` equal-power ramps run on the AudioContext timeline via
+  `setValueCurveAtTime`; the default linear curve delegates to `Howl.fade()`,
+  whose timing follows Howler's mode (Web Audio vs HTML5 fallback).
 - The shell never bundles Howler; it must always resolve through the user's
   `peerDependency`.
-- Escape hatch `getNativeHowl()` (or `.nativeHowl`) exists so users never
+- Escape hatch `sound.nativeHowl` (readonly property) exists so users never
   feel trapped by the narrow surface.
 
 ## Commit & PR style

@@ -10,7 +10,7 @@
 
 隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao) ─ 另見 [aifsmjs](https://github.com/yshengliao/aifsmjs)（FSM）、[aiecsjs](https://github.com/yshengliao/aiecsjs)（ECS）、[aibridgejs](https://github.com/yshengliao/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/yshengliao/aipooljs)（物件池）、[aiquadtreejs](https://github.com/yshengliao/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/yshengliao/aieventjs)（event emitter）。
 
-> **狀態：0.4.0。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.4.0 是降依賴 + stability-freeze release —— 相較 0.3.0 無 runtime API 變更，`howler` 維持 required peer dependency（見 [「為什麼有 aiaudiojs」](#為什麼有-aiaudiojs)）。
+> **狀態：0.5.1。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.5.1 修復 `play()` AbortSignal 監聽器洩漏（監聽器現在在自然 end/stop 時也會移除，不只 abort 時）。詳見 CHANGELOG。
 
 ---
 

@@ -48,11 +48,12 @@ Key invariants:
 - `dispose()` is idempotent at both the Audio and Sound levels.
 - Every long-running operation accepts an `AbortSignal`; aborting cancels
   in-flight work and rejects pending promises with the standard `AbortError`.
-- `crossfade()` ramps run on the AudioContext timeline
-  (`linearRampToValueAtTime`), never via `setInterval` polling.
+- `crossfade()` equal-power ramps run on the AudioContext timeline via
+  `setValueCurveAtTime`; the default linear curve delegates to `Howl.fade()`,
+  whose timing follows Howler's mode (Web Audio vs HTML5 fallback).
 - The shell never bundles Howler; it must always resolve through the user's
   `peerDependency`.
-- Escape hatch `getNativeHowl()` (or `.nativeHowl`) exists so users never
+- Escape hatch `sound.nativeHowl` (readonly property) exists so users never
   feel trapped by the narrow surface.
 
 ## Commit & PR style
