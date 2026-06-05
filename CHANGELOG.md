@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-05
+
+### Docs
+
+- Added a prominent "audio unlock must happen inside a user gesture" README callout and an app-side "ship audio before your assets exist" placeholder recipe (`Howler.ctx` + user-authored `OscillatorNode`, explicitly not a library feature; no synth added). No runtime or API change; `dist` byte-identical to 0.5.2.
+
 ## [0.5.2] - 2026-06-05
 
 ### Docs

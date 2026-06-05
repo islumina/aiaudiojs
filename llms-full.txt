@@ -23,7 +23,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM), [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS), [aibridgejs](https://github.com/yshengliao/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/yshengliao/aipooljs) (object pool), [aiquadtreejs](https://github.com/yshengliao/aiquadtreejs) (spatial), and [aieventjs](https://github.com/yshengliao/aieventjs) (event emitter).
 
-> **Status: 0.5.1.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.5.1 fixes the `play()` AbortSignal listener leak (listeners are now removed on natural end/stop as well as on abort). See CHANGELOG for details.
+> **Status: 0.5.3.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.5.3 is a docs patch: a prominent audio-unlock callout and an app-side "ship audio before your assets exist" recipe. See CHANGELOG for details.
 
 ---
 
@@ -84,6 +84,32 @@ howl.fade(1, 0, 500, zapId); // direct Howler call
 // 5. Tear down.
 audio.disposeAll(); // every sound this Audio created
 ```
+
+---
+
+## ⚠️ Audio unlock must happen inside a user gesture
+
+> **Browsers (and iOS Safari especially) start the `AudioContext` _suspended_. It only resumes from inside a real user gesture — a `touchstart` / `mousedown` / `keydown` / `pointerdown` / `click` handler. Unlock MUST happen _inside_ that gesture handler, before your first `play()` — preloading with `load()` beforehand is fine, since `load()` only fetches and decodes and never resumes the context. Calling `play()` before the context is unlocked produces silence on iOS.**
+
+Two ways to satisfy the rule:
+
+- **`autoUnlock: true` (default).** `createAudio` binds a one-shot `touchstart` / `mousedown` / `keydown` listener on `document` that calls `Howler.ctx.resume()` on the first gesture, then detaches itself. For most apps this is all you need — but the gesture still has to come from the **real user**, so don't expect sound from `play()` calls made before the user has interacted (preloading with `load()` is fine).
+- **`autoUnlock: false` + manual [`audio.unlock()`](#api-sketch).** Wire your own gesture handler and `await audio.unlock()` inside it when you control the first interaction (e.g. a "Tap to start" screen). `unlock()` is idempotent — but call it _inside_ the gesture handler (as below): it asks the browser to resume the context once, and a call made outside a gesture is ignored, so the unlock must ride a real interaction.
+
+```typescript
+// Manual unlock from your own "Tap to start" button.
+const audio = createAudio({ autoUnlock: false });
+
+startButton.addEventListener("pointerdown", async () => {
+  await audio.unlock();              // inside the gesture, before any play()
+  const bgm = await audio.load("title.mp3");
+  bgm.play({ loop: true });
+});
+```
+
+`resumeOnVisibility: true` (default) additionally re-attempts `resume()` when the tab returns to the foreground — a best-effort fix for the iOS "context suspends after backgrounding" pattern. It is **not** a substitute for the initial gesture; the first unlock still has to ride a user interaction.
+
+See [`AudioOptions.autoUnlock`](#api-sketch) and [`Audio.unlock()`](#api-sketch) for the precise contract; full JSDoc is in [`src/index.ts`](src/index.ts).
 
 ---
 
@@ -158,6 +184,73 @@ Full JSDoc lives in [`src/index.ts`](src/index.ts).
 
 ---
 
+## Recipe: ship audio before your assets exist (app-side placeholder)
+
+Sometimes the game loop is ready before the sound designer is — you want a
+"feedback beep" on hit/score _today_ and you'll swap in the real `.mp3` later.
+
+aiaudiojs deliberately **does not** ship a built-in synth or oscillator —
+MIDI / synth / oscillator is an explicit [non-goal](#capabilities--limitations).
+But you don't need one in the library: the same Web Audio context Howler
+uses is reachable through `Howler.ctx` (unlocked by that first user gesture), so a placeholder tone is
+~10 lines of **your own app code** using the standard
+[`OscillatorNode`](https://developer.mozilla.org/en-US/docs/Web/API/OscillatorNode).
+Later, when the asset exists, you `load()` it and play through aiaudiojs (or
+reach the underlying Howl via the [`sound.nativeHowl`](#api-sketch) escape
+hatch) — and you delete the placeholder.
+
+> **This is application-side code, not a library feature.** aiaudiojs adds
+> nothing here; the snippet below lives in _your_ project. It is shown only so
+> the unlock + AudioContext story is end-to-end.
+
+```typescript
+import { createAudio } from "aiaudiojs";
+import { Howler } from "howler"; // already your peer dependency
+
+const audio = createAudio({ autoUnlock: true });
+
+// --- APP-SIDE placeholder. Not part of aiaudiojs. Delete once real SFX land.
+// Plays a short beep on the SAME AudioContext aiaudiojs/Howler uses, so once
+// the user gesture unlocks it the beep inherits it — no second context, no extra unlock.
+function beep(freq = 440, ms = 80, gain = 0.2): void {
+  const ctx = Howler.ctx;          // shared context (suspended until a gesture resumes it)
+  if (!ctx) return;                // HTML5-fallback mode: no Web Audio context
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = "square";
+  osc.frequency.value = freq;
+  g.gain.value = gain;
+  osc.connect(g).connect(ctx.destination);
+  const now = ctx.currentTime;
+  // Tiny attack/release ramp avoids the click a hard start/stop produces.
+  const attack = Math.min(0.005, ms / 2000); // keep attack <= release for tiny ms
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(gain, now + attack);
+  g.gain.linearRampToValueAtTime(0, now + ms / 1000);
+  osc.start(now);
+  osc.stop(now + ms / 1000 + 0.01);
+  osc.onended = () => {
+    osc.disconnect();
+    g.disconnect();
+  };
+}
+
+// Today: placeholder feedback.
+onPlayerHit(() => beep(220, 60));   // app-side oscillator
+
+// Later, when assets exist: swap to a real loaded Sound and drop `beep`.
+const hit = await audio.load("sfx/hit.mp3");
+onPlayerHit(() => hit.play({ volume: 0.8 }));
+// Need Howler's sprite/advanced API for the real asset? Reach in:
+//   const howl = hit.nativeHowl;
+```
+
+Because the placeholder runs on `Howler.ctx`, the [unlock
+rule](#-audio-unlock-must-happen-inside-a-user-gesture) above still applies —
+the first `beep()` only makes sound after the user has interacted with the page.
+
+---
+
 ## Roadmap
 
 | Version    | Adds                                                                                                                                |
@@ -186,6 +279,12 @@ All notable changes to this project are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.5.3] - 2026-06-05
+
+### Docs
+
+- Added a prominent "audio unlock must happen inside a user gesture" README callout and an app-side "ship audio before your assets exist" placeholder recipe (`Howler.ctx` + user-authored `OscillatorNode`, explicitly not a library feature; no synth added). No runtime or API change; `dist` byte-identical to 0.5.2.
 
 ## [0.5.2] - 2026-06-05
 
