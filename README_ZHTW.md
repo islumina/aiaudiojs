@@ -10,7 +10,7 @@
 
 隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao) ─ 另見 [aifsmjs](https://github.com/yshengliao/aifsmjs)（FSM）、[aiecsjs](https://github.com/yshengliao/aiecsjs)（ECS）、[aibridgejs](https://github.com/yshengliao/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/yshengliao/aipooljs)（物件池）、[aiquadtreejs](https://github.com/yshengliao/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/yshengliao/aieventjs)（event emitter）。
 
-> **狀態：0.5.1。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.5.1 修復 `play()` AbortSignal 監聽器洩漏（監聽器現在在自然 end/stop 時也會移除，不只 abort 時）。詳見 CHANGELOG。
+> **狀態：0.5.3。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.5.3 是文件修補：新增醒目的 audio-unlock callout，以及一個 app 端「在 asset 還不存在時就先出聲」的 recipe。詳見 CHANGELOG。
 
 ---
 
@@ -71,6 +71,32 @@ howl.fade(1, 0, 500, zapId); // 直接打 Howler
 // 5. 拆除。
 audio.disposeAll(); // 這個 Audio 建出的所有 sound
 ```
+
+---
+
+## ⚠️ Audio unlock 必須發生在 user gesture 內
+
+> **瀏覽器（尤其 iOS Safari）啟動時 `AudioContext` 是 _suspended_ 狀態。它只會從真正的 user gesture 內恢復 ── `touchstart` / `mousedown` / `keydown` / `pointerdown` / `click` handler。Unlock 必須發生在那個 gesture handler _內_、在你第一次 `play()` _之前_ ── 事先用 `load()` 預載沒問題，因為 `load()` 只會抓取與解碼、永遠不會 resume context。在 context unlock 之前呼叫 `play()`，在 iOS 上會得到一片靜音。**
+
+兩種滿足這條規則的方式：
+
+- **`autoUnlock: true`（預設）。** `createAudio` 在 `document` 綁一個 one-shot 的 `touchstart` / `mousedown` / `keydown` listener，在第一個 gesture 時呼叫 `Howler.ctx.resume()`，然後把自己卸載。對多數 app 這樣就夠了 ── 但那個 gesture 仍必須來自**真正的使用者**，所以別期待在使用者互動之前發出的 `play()` 會有聲音（事先用 `load()` 預載沒問題）。
+- **`autoUnlock: false` + 手動 [`audio.unlock()`](#api-草稿)。** 當你掌控第一次互動時（例如「Tap to start」畫面），自己接 gesture handler，並在其中 `await audio.unlock()`。`unlock()` 冪等 ── 但要在 gesture handler _內_ 呼叫（如下）：它請求瀏覽器把 context 恢復一次，而在 gesture 之外發出的呼叫會被忽略，所以 unlock 必須搭上一次真正的互動。
+
+```typescript
+// 從你自己的「Tap to start」按鈕手動 unlock。
+const audio = createAudio({ autoUnlock: false });
+
+startButton.addEventListener("pointerdown", async () => {
+  await audio.unlock();              // 在 gesture 內、任何 play() 之前
+  const bgm = await audio.load("title.mp3");
+  bgm.play({ loop: true });
+});
+```
+
+`resumeOnVisibility: true`（預設）會在 tab 回到前景時額外重試 `resume()` ── 對 iOS「背景化後 context 自動 suspend」的 pattern 做 best-effort 補救。它**不是**初始 gesture 的替代品；第一次 unlock 仍必須搭上一次 user 互動。
+
+[`AudioOptions.autoUnlock`](#api-草稿) 與 [`Audio.unlock()`](#api-草稿) 的精確 contract 見 [API 草稿](#api-草稿)；完整 JSDoc 在 [`src/index.ts`](src/index.ts)。
 
 ---
 
@@ -142,6 +168,64 @@ function createAudio(opts?: AudioOptions): Audio;
 ```
 
 完整 JSDoc 在 [`src/index.ts`](src/index.ts)。
+
+---
+
+## Recipe：在 asset 還不存在時就先出聲（app 端 placeholder）
+
+有時 game loop 比音效設計師先就緒 ── 你想要 hit/score _今天_ 就有「回饋 beep」，之後再換上真正的 `.mp3`。
+
+aiaudiojs 刻意**不**內建 synth 或 oscillator ── MIDI / synth / oscillator 是明確的[非目標](#能做--不做)。
+但你不需要 library 提供它：Howler 用的同一個 Web Audio context 可以透過 `Howler.ctx`（被那第一個 user gesture unlock）拿到，所以一個 placeholder tone 只是 ~10 行**你自己的 app 程式碼**，用標準的
+[`OscillatorNode`](https://developer.mozilla.org/en-US/docs/Web/API/OscillatorNode)。
+之後 asset 存在時，你 `load()` 它、透過 aiaudiojs 播放（或經由 [`sound.nativeHowl`](#api-草稿) 逃生口拿到底層的 Howl）── 然後把 placeholder 刪掉。
+
+> **這是 application 端的程式碼，不是 library 功能。** aiaudiojs 在這裡什麼都沒加；下面的 snippet 活在 _你的_ 專案裡。列出來只是為了讓 unlock + AudioContext 的故事是 end-to-end 完整的。
+
+```typescript
+import { createAudio } from "aiaudiojs";
+import { Howler } from "howler"; // 已經是你的 peer dependency
+
+const audio = createAudio({ autoUnlock: true });
+
+// --- APP 端 placeholder。不屬於 aiaudiojs。真正的 SFX 到位後就刪掉。
+// 在 aiaudiojs/Howler 用的「同一個」 AudioContext 上播一聲短 beep，所以一旦
+// user gesture 把它 unlock，beep 就直接繼承 ── 沒有第二個 context、不用再 unlock 一次。
+function beep(freq = 440, ms = 80, gain = 0.2): void {
+  const ctx = Howler.ctx;          // shared context（在 gesture 把它 resume 之前是 suspended）
+  if (!ctx) return;                // HTML5-fallback 模式：沒有 Web Audio context
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = "square";
+  osc.frequency.value = freq;
+  g.gain.value = gain;
+  osc.connect(g).connect(ctx.destination);
+  const now = ctx.currentTime;
+  // 微小的 attack/release ramp 避免 hard start/stop 產生的爆音。
+  const attack = Math.min(0.005, ms / 2000); // 讓 attack <= release，因應極小的 ms
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(gain, now + attack);
+  g.gain.linearRampToValueAtTime(0, now + ms / 1000);
+  osc.start(now);
+  osc.stop(now + ms / 1000 + 0.01);
+  osc.onended = () => {
+    osc.disconnect();
+    g.disconnect();
+  };
+}
+
+// 今天：placeholder 回饋。
+onPlayerHit(() => beep(220, 60));   // app 端 oscillator
+
+// 之後 asset 存在時：換成真正 load 進來的 Sound，並把 `beep` 拿掉。
+const hit = await audio.load("sfx/hit.mp3");
+onPlayerHit(() => hit.play({ volume: 0.8 }));
+// 真正的 asset 需要 Howler 的 sprite/進階 API？伸手進去拿：
+//   const howl = hit.nativeHowl;
+```
+
+因為 placeholder 跑在 `Howler.ctx` 上，上面的 [unlock 規則](#-audio-unlock-必須發生在-user-gesture-內)依然適用 ──
+第一次 `beep()` 只有在使用者與頁面互動之後才會發出聲音。
 
 ---
 
