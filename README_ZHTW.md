@@ -1,14 +1,14 @@
 # aiaudiojs
 
 [![npm version](https://img.shields.io/npm/v/aiaudiojs.svg)](https://www.npmjs.com/package/aiaudiojs)
-[![CI](https://github.com/yshengliao/aiaudiojs/actions/workflows/ci.yml/badge.svg)](https://github.com/yshengliao/aiaudiojs/actions/workflows/ci.yml)
+[![CI](https://github.com/islumina/aiaudiojs/actions/workflows/ci.yml/badge.svg)](https://github.com/islumina/aiaudiojs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)](https://www.anthropic.com/claude-code)
 [![English](https://img.shields.io/badge/lang-English-blue.svg)](README.md)
 
 > 一個架在 [Howler.js](https://howlerjs.com/) 上的薄殼 Web Audio 套件。把 `Howl` 包進 `dispose()` 冪等、`AbortSignal` 取消、一級 equal-power `crossfade()`，以及其他 ai\*js convention。Howler 仍是 `peerDependency`，需要它的進階 API 時可以透過 `sound.nativeHowl` 直接拿到。
 
-隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao) ─ 另見 [aifsmjs](https://github.com/yshengliao/aifsmjs)（FSM）、[aiecsjs](https://github.com/yshengliao/aiecsjs)（ECS）、[aibridgejs](https://github.com/yshengliao/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/yshengliao/aipooljs)（物件池）、[aiquadtreejs](https://github.com/yshengliao/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/yshengliao/aieventjs)（event emitter）。
+隸屬 [ai\*js micro-runtime 生態系](https://github.com/islumina) ─ 另見 [aifsmjs](https://github.com/islumina/aifsmjs)（FSM）、[aiecsjs](https://github.com/islumina/aiecsjs)（ECS）、[aibridgejs](https://github.com/islumina/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/islumina/aipooljs)（物件池）、[aiquadtreejs](https://github.com/islumina/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/islumina/aieventjs)（event emitter）。
 
 > **狀態：0.5.3。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.5.3 是文件修補：新增醒目的 audio-unlock callout，以及一個 app 端「在 asset 還不存在時就先出聲」的 recipe。詳見 CHANGELOG。
 
