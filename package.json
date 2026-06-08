@@ -1,6 +1,6 @@
 {
   "name": "aiaudiojs",
-  "version": "0.5.3",
+  "version": "0.5.5",
   "description": "Thin Web Audio shell over Howler.js — dispose() idempotency, AbortSignal cancellation, first-class equal-power crossfade(), and ai*js conventions. Howler stays as a peerDependency.",
   "keywords": [
     "audio",
@@ -15,13 +15,13 @@
   ],
   "author": "yshengliao",
   "license": "MIT",
-  "homepage": "https://github.com/yshengliao/aiaudiojs#readme",
+  "homepage": "https://github.com/islumina/aiaudiojs#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yshengliao/aiaudiojs.git"
+    "url": "git+https://github.com/islumina/aiaudiojs.git"
   },
   "bugs": {
-    "url": "https://github.com/yshengliao/aiaudiojs/issues"
+    "url": "https://github.com/islumina/aiaudiojs/issues"
   },
   "type": "module",
   "sideEffects": false,
