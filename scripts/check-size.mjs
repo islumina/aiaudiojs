@@ -20,7 +20,11 @@ const budgets = {
   // 0.5.0: bumped 2000 → 2100 B. The play() AbortSignal listener-leak fix
   // adds a cleanup closure + two Howler per-id event-listener pairs (end/stop),
   // which are real runtime code. The shell remains well under 3 KB gzip.
-  "dist/index.js": 2_100,
+  //
+  // `Sound.resume(id?)` (next release): bumped 2100 → 2200 B. The new public
+  // mutator adds a single-id fast path plus a paused-voice enumeration over
+  // `_sounds` — real runtime code. The shell stays well under 3 KB gzip.
+  "dist/index.js": 2_200,
 };
 
 const failures = [];

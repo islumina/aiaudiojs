@@ -120,6 +120,17 @@ export interface Sound {
   stop(id?: number): void;
 
   /**
+   * Resume a paused instance, or all paused instances if id is omitted.
+   *
+   * - With `id`: resumes that specific voice and returns it.
+   * - Without `id`: resumes every currently-paused voice (`_paused === true`)
+   *   and returns the last resumed id, or `-1` if nothing was paused.
+   *
+   * @throws {@link AudioDisposedError} if called after {@link dispose}.
+   */
+  resume(id?: number): number;
+
+  /**
    * Linearly fade from `from` to `to` over `ms` milliseconds. Resolves
    * after `ms` regardless of whether the fade visibly completed (Howler
    * fades cannot be cancelled mid-flight). If `dispose()` is called before
@@ -412,6 +423,22 @@ class SoundImpl implements Sound {
   stop(id?: number): void {
     this.ck();
     this.howl.stop(id);
+  }
+
+  resume(id?: number): number {
+    this.ck();
+    if (id !== undefined) {
+      this.howl.play(id);
+      return id;
+    }
+    let last = -1;
+    for (const s of (this.howl as unknown as HowlWithSounds)._sounds ?? []) {
+      if (s._paused === true && s._id !== undefined) {
+        this.howl.play(s._id);
+        last = s._id;
+      }
+    }
+    return last;
   }
 
   fade(from: number, to: number, ms: number, id?: number): Promise<void> {

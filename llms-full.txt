@@ -280,6 +280,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Sound.resume(id?)` — resume a paused voice by id, or resume all currently-paused voices and return the last resumed id (or `-1` if none were paused); throws `AudioDisposedError` after `dispose()`.
+
 ## [0.5.5] - 2026-06-08
 
 ### Changed
