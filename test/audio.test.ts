@@ -86,11 +86,28 @@ vi.mock("howler", () => {
       }
     }
 
-    play(): number {
-      return nextSoundId++;
+    _sounds: { _id: number; _paused: boolean }[] = [];
+
+    play(id?: number): number {
+      if (id !== undefined) {
+        // Resume a specific paused voice.
+        const s = this._sounds.find((v) => v._id === id);
+        if (s !== undefined) s._paused = false;
+        return id;
+      }
+      const newId = nextSoundId++;
+      this._sounds.push({ _id: newId, _paused: false });
+      return newId;
     }
 
-    pause(_id?: number): void {}
+    pause(id?: number): void {
+      if (id !== undefined) {
+        const s = this._sounds.find((v) => v._id === id);
+        if (s !== undefined) s._paused = true;
+      } else {
+        for (const s of this._sounds) s._paused = true;
+      }
+    }
 
     stop(_id?: number): void {}
 
@@ -633,6 +650,57 @@ describe("H. Destructurable + nativeHowl escape hatch", () => {
     // nativeHowl must be the actual Howl instance — its methods must exist.
     expect(typeof sound.nativeHowl.play).toBe("function");
     expect(typeof sound.nativeHowl.fade).toBe("function");
+    audio.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. Sound.resume
+// ---------------------------------------------------------------------------
+
+describe("I. Sound.resume", () => {
+  it("I1. resume(id) calls howl.play(id) and returns id", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    sound.pause(id);
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume(id);
+    expect(playSpy).toHaveBeenCalledWith(id);
+    expect(result).toBe(id);
+    audio.dispose();
+  });
+
+  it("I2. resume() with no arg resumes every _paused===true voice and returns the last id", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id1 = sound.play();
+    const id2 = sound.play();
+    sound.pause(id1);
+    sound.pause(id2);
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).toHaveBeenCalledWith(id1);
+    expect(playSpy).toHaveBeenCalledWith(id2);
+    expect(result).toBe(id2);
+    audio.dispose();
+  });
+
+  it("I3. resume() returns -1 when no voices are paused", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    sound.play();
+    // No pause called — _paused is false for the active voice.
+    const result = sound.resume();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I4. resume() after dispose() throws AudioDisposedError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    sound.dispose();
+    expect(() => sound.resume()).toThrow(AudioDisposedError);
     audio.dispose();
   });
 });
