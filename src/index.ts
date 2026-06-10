@@ -318,6 +318,19 @@ interface HowlWithSounds {
   _sounds: HowlInternalSound[];
 }
 
+// Single guarded entry point for every `_sounds` private-internal reach-in
+// (resume enumeration, equal-power voice filter + gain access). Howler is a
+// `^2.2.4` peer, so a 2.3.x could rename or drop `_sounds`; mapping a missing
+// shape to a named `AudioError` here keeps every call site degrading the same
+// way instead of crashing with a raw TypeError (AUD-B-03).
+function getSounds(howl: Howl): HowlInternalSound[] {
+  const raw = (howl as unknown as Partial<HowlWithSounds>)._sounds;
+  if (!Array.isArray(raw)) {
+    throw new AudioError("howler internal `_sounds` is unavailable (unexpected howler version?)");
+  }
+  return raw;
+}
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -432,7 +445,7 @@ class SoundImpl implements Sound {
       return id;
     }
     let last = -1;
-    for (const s of (this.howl as unknown as HowlWithSounds)._sounds ?? []) {
+    for (const s of getSounds(this.howl)) {
       if (s._paused === true && s._id !== undefined) {
         this.howl.play(s._id);
         last = s._id;
@@ -593,9 +606,7 @@ export function createAudio(opts?: AudioOptions): Audio {
   // `_node.gain` IS the per-sound volume param. In HTML5 mode `_node` is an
   // <audio> element with no `.gain`, so it is filtered out (empty array there).
   function webAudioSounds(howl: Howl): HowlInternalSound[] {
-    return (howl as unknown as HowlWithSounds)._sounds.filter(
-      (s) => s._node?.gain !== undefined && s._paused !== true,
-    );
+    return getSounds(howl).filter((s) => s._node?.gain !== undefined && s._paused !== true);
   }
 
   // Schedule an equal-power ramp on one sound's gain and sync Howler's
@@ -628,12 +639,23 @@ export function createAudio(opts?: AudioOptions): Audio {
     // Howl.fade() is not used in this path. No extra GainNodes are inserted,
     // so there is nothing to re-route or restore.
     const toId = to.play({ volume: 0 });
-    const toSounds = webAudioSounds(to.nativeHowl).filter((s) => s._id === toId);
-    if (toSounds.length === 0) {
+    // Past this point a voice is live on `to`; any reach-in failure (HTML5
+    // fallback OR a reshaped `_sounds`) must stop it before throwing so no
+    // silent orphan voice is left playing (AUD-B-03).
+    let toSounds: HowlInternalSound[];
+    let fromSounds: HowlInternalSound[];
+    try {
+      toSounds = webAudioSounds(to.nativeHowl).filter((s) => s._id === toId);
+      if (toSounds.length === 0) {
+        throw new AudioError(
+          "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
+        );
+      }
+      fromSounds = webAudioSounds(from.nativeHowl);
+    } catch (err) {
       to.stop(toId);
-      throw new AudioError("equal-power crossfade requires Web Audio mode; HTML5 fallback active");
+      throw err;
     }
-    const fromSounds = webAudioSounds(from.nativeHowl);
 
     const mv = state.masterVolume;
     const now = ctx.currentTime;
