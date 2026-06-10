@@ -782,6 +782,40 @@ describe("G. crossfade", () => {
     audio.dispose();
     vi.useRealTimers();
   });
+
+  it("G7. linear crossfade aborted mid-flight detaches the abort listener with the exact handler (prior-M1 leak pin)", async () => {
+    // AUD-C-01 / prior-wave M1: the linear abort branch resolved the promise
+    // but skipped cleanupAbort(), so it relied entirely on { once: true } and
+    // never explicitly detached its listener — the equal-power path did. The
+    // shared resolveAfterWithAbort helper now detaches on BOTH the normal and
+    // aborted paths. Pin that the EXACT handler registered for "abort" is the
+    // one removed (capture it from addEventListener), and that a second abort
+    // is a silent no-op afterwards.
+    vi.useFakeTimers();
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const p = audio.crossfade(from, to, { duration: 2, signal: ctrl.signal });
+
+    // Capture the exact handler the crossfade registered for "abort".
+    const addCall = addSpy.mock.calls.find((c) => c[0] === "abort");
+    expect(addCall).toBeDefined();
+    const registered = addCall![1];
+
+    ctrl.abort();
+    await expect(p).resolves.toBeUndefined();
+
+    // The SAME handler must have been removed — no listener left on the signal.
+    expect(removeSpy).toHaveBeenCalledWith("abort", registered);
+
+    // A second abort must be a silent no-op (nothing left wired).
+    expect(() => ctrl.abort()).not.toThrow();
+    audio.dispose();
+    vi.useRealTimers();
+  });
 });
 
 // ---------------------------------------------------------------------------

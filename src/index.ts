@@ -364,6 +364,56 @@ function clamp(v: number): number {
   return Math.min(1, Math.max(0, v));
 }
 
+/**
+ * Shared resolve-after-duration-with-abort lifecycle for both crossfade paths.
+ *
+ * Resolves the returned promise after `durationMs` (normal completion). If
+ * `signal` aborts first, runs `onAbort()` (the path-specific side effect — e.g.
+ * freezing the equal-power ramps; a no-op for the linear path) and resolves
+ * early. BOTH completion paths clear the timer and remove the abort listener,
+ * so the abort handler can never outlive the crossfade — this is the single
+ * source of the cancellation state machine the two paths used to hand-roll
+ * separately (AUD-C-01), and it closes the prior-wave M1 leak where the linear
+ * path's abort branch never detached its listener.
+ */
+function resolveAfterWithAbort(
+  durationMs: number,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+
+    const detachAbort = (): void => {
+      if (signal !== undefined && abortListener !== undefined) {
+        signal.removeEventListener("abort", abortListener);
+        abortListener = undefined;
+      }
+    };
+
+    const finish = (aborted: boolean): void => {
+      if (done) return;
+      done = true;
+      if (aborted) onAbort();
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      detachAbort();
+      resolve();
+    };
+
+    timer = setTimeout(() => finish(false), durationMs);
+
+    if (signal !== undefined) {
+      abortListener = () => finish(true);
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // SoundImpl — per-buffer handle wrapping a single Howl
 // ---------------------------------------------------------------------------
@@ -697,48 +747,18 @@ export function createAudio(opts?: AudioOptions): Audio {
     for (const s of fromSounds) rampSound(s, cos, 0, now, dur);
     for (const s of toSounds) rampSound(s, sin, 1, now, dur);
     const durationMs = dur * 1000;
-    return new Promise<void>((resolve) => {
-      let done = false;
-      const finish = (abortedMidway: boolean): void => {
-        if (done) return;
-        done = true;
-        if (abortedMidway) {
-          // Freeze each ramp at its current value (Web Audio requires
-          // cancelScheduledValues THEN setValueAtTime, in that order) and
-          // sync `_volume` to the frozen position so a later Howler.mute() /
-          // unmute() re-derives the correct gain rather than the terminal.
-          const t = ctx.currentTime;
-          for (const s of touched) {
-            const g = s._node?.gain;
-            if (g === undefined) continue;
-            g.cancelScheduledValues(t);
-            g.setValueAtTime(g.value, t);
-            s._volume = g.value;
-          }
-        }
-        cleanupAbort();
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        resolve();
-      };
-
-      let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
-        () => finish(false),
-        durationMs,
-      );
-
-      let onAbort: (() => void) | undefined;
-      const cleanupAbort = (): void => {
-        if (cfOpts.signal !== undefined && onAbort !== undefined) {
-          cfOpts.signal.removeEventListener("abort", onAbort);
-          onAbort = undefined;
-        }
-      };
-      if (cfOpts.signal !== undefined) {
-        onAbort = () => finish(true);
-        cfOpts.signal.addEventListener("abort", onAbort, { once: true });
+    return resolveAfterWithAbort(durationMs, cfOpts.signal, () => {
+      // Abort side effect: freeze each ramp at its current value (Web Audio
+      // requires cancelScheduledValues THEN setValueAtTime, in that order) and
+      // sync `_volume` to the frozen position so a later Howler.mute() /
+      // unmute() re-derives the correct gain rather than the terminal.
+      const t = ctx.currentTime;
+      for (const s of touched) {
+        const g = s._node?.gain;
+        if (g === undefined) continue;
+        g.cancelScheduledValues(t);
+        g.setValueAtTime(g.value, t);
+        s._volume = g.value;
       }
     });
   }
@@ -774,33 +794,12 @@ export function createAudio(opts?: AudioOptions): Audio {
     // Outgoing: 1 -> 0. Incoming: 0 -> 1.
     from.nativeHowl.fade(1, 0, durationMs);
     to.nativeHowl.fade(0, 1, durationMs);
-    return new Promise<void>((resolve) => {
-      const signal = cfOpts.signal;
-      let onAbort: (() => void) | undefined;
-      const cleanupAbort = (): void => {
-        if (signal !== undefined && onAbort !== undefined) {
-          signal.removeEventListener("abort", onAbort);
-          onAbort = undefined;
-        }
-      };
-      let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-        timer = undefined;
-        cleanupAbort();
-        resolve();
-      }, durationMs);
-      if (signal !== undefined) {
-        onAbort = (): void => {
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
-          // NOTE: Howler.fade() in flight CANNOT be cancelled; the fade
-          // keeps running silently. We resolve early so callers can move on.
-          resolve();
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
+    // Abort side effect is a no-op: Howler.fade() in flight CANNOT be cancelled
+    // (the ramp keeps running silently); the shared helper just resolves early
+    // and detaches the listener so callers can move on. Detaching on BOTH the
+    // normal and aborted paths is what the helper guarantees — the linear path
+    // used to skip it on abort (prior-wave M1).
+    return resolveAfterWithAbort(durationMs, cfOpts.signal, noop);
   }
 
   function doDispose(): void {
