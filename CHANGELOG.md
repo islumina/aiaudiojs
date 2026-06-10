@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-06-10
+
+### Fixed
+
+- **Master volume is applied exactly once.** It was applied twice — Howler's global gain × the per-id default — so every default-volume voice played at `masterVolume²`, and voices started before vs after a master change diverged in loudness. Per-voice volume is now a relative `[0, 1]` value composed once with the global master. **Audible change: with `masterVolume < 1`, default-volume playback is louder than before (it is now correct).** Crossfades schedule relative gains on both the linear and equal-power paths for the same reason. (Review wave 2026-06-10, AUD-B-02.)
+- **`resume()` no longer restarts stopped, naturally-ended, or never-played pool voices** — the no-argument enumeration now requires `_ended !== true` in addition to `_paused === true` (Howler parks finished voices as paused+ended). (AUD-B-01.)
+- **`play({ loop: true, signal })` abort wiring survives loop boundaries** — Howler fires `end` at every loop iteration; cleanup now runs only for non-looping voices, so aborting a looping BGM after the first loop still stops it. (AUD-R-01.)
+- All `_sounds` private-internal reach-ins go through one guarded accessor that maps a missing/reshaped Howler internal to a named `AudioError` (the equal-power path previously crashed with a raw `TypeError`, and now also stops the just-started `to` voice before throwing instead of orphaning it). (AUD-B-03.)
+- Non-finite numeric inputs are guarded: `volume(NaN)` normalises to `0` instead of poisoning the master gain, and a non-finite crossfade `duration` rejects with `AudioError` before any voice starts. (AUD-S-02.)
+- The linear crossfade's abort path now detaches its abort listener (prior-wave M1), with an explicit detach pin test; both crossfade paths share one timer+abort lifecycle helper. (AUD-C-01.)
+
+### Changed
+
+- The Howler test mock was rebuilt to model real voice-pool semantics (`stop()` parks voices `_ended`+`_paused`, per-loop `end` events, per-id gain × global master) — the previous mock's no-op `stop()` is why these defects were invisible to the suite. Three equal-power assertions were retightened to relative-gain expectations.
+- Supply-chain and release hardening: CI/publish actions SHA-pinned, npm CLI pinned (`11.16.0`), `permissions: contents: read` on CI, job timeouts, tag↔package.json version guard, `npm publish --ignore-scripts`, manual dispatch defaults to dry-run, new `verify:docs` banner gate, two-stage typecheck, `llms-full.txt` embeds `STABILITY.md`.
+
+### Docs
+
+- `STABILITY.md` now classifies `Sound.resume(id?)` (experimental, 0.5.6); `crossfade`'s synchronous-throw vs promise-rejection failure channels documented (F9 corrected, F5 rewritten for relative gains); status banners refreshed.
+
 ## [0.5.6] - 2026-06-09
 
 ### Added

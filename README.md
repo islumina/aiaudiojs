@@ -10,7 +10,7 @@
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/islumina) — see also [aifsmjs](https://github.com/islumina/aifsmjs) (FSM), [aiecsjs](https://github.com/islumina/aiecsjs) (ECS), [aibridgejs](https://github.com/islumina/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/islumina/aipooljs) (object pool), [aiquadtreejs](https://github.com/islumina/aiquadtreejs) (spatial), and [aieventjs](https://github.com/islumina/aieventjs) (event emitter).
 
-> **Status: 0.5.6.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `resume` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. See [CHANGELOG.md](CHANGELOG.md) for release history.
+> **Status: 0.5.7.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `resume` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
