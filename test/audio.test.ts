@@ -111,7 +111,10 @@ vi.mock("howler", () => {
       if (event === "end") {
         const voice = this._sounds.find((v) => v._id === id);
         if (voice !== undefined && voice._loop !== true) {
+          // Natural end of a non-loop voice: Howler parks it _ended:true and
+          // _paused:true (the voice returns to the pool).
           voice._ended = true;
+          voice._paused = true;
         }
       }
       const evMap = listeners.get(this);
@@ -807,6 +810,69 @@ describe("I. Sound.resume", () => {
     const sound = await audio.load("test.mp3");
     sound.dispose();
     expect(() => sound.resume()).toThrow(AudioDisposedError);
+    audio.dispose();
+  });
+
+  // AUD-B-01 — the no-arg enumeration must resume ONLY genuinely-paused
+  // voices. In real Howler, stop(), natural end, and the never-played pooled
+  // voice all leave `_paused === true` with `_ended === true`; resuming them
+  // replays finished SFX from zero (or starts a never-played voice). The
+  // filter must also require `_ended !== true`.
+
+  it("I5. resume() does NOT replay a stopped voice (stop → _paused+_ended)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    sound.stop(id); // Howler: stopped voice parks _paused:true, _ended:true
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I6. resume() does NOT replay a naturally-ended voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    // Natural end of a non-loop voice: _ended becomes true.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I7. resume() does NOT start a never-played pooled voice (_paused+_ended)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    // A pool voice that was loaded but never played: Howler leaves it
+    // _paused:true, _ended:true.
+    (
+      sound.nativeHowl as unknown as {
+        __seedVoice: (v: { _id: number; _paused: boolean; _ended: boolean }) => void;
+      }
+    ).__seedVoice({ _id: 42, _paused: true, _ended: true });
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I8. resume() resumes a genuinely paused voice but skips a sibling ended voice; returns the paused id", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const pausedId = sound.play();
+    const endedId = sound.play();
+    sound.pause(pausedId); // genuinely paused: _paused:true, _ended:false
+    sound.stop(endedId); // parked: _paused:true, _ended:true
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).toHaveBeenCalledWith(pausedId);
+    expect(playSpy).not.toHaveBeenCalledWith(endedId);
+    expect(result).toBe(pausedId);
     audio.dispose();
   });
 });

@@ -313,6 +313,10 @@ interface HowlInternalSound {
   // Howler marks idle/stopped pool voices `_paused === true`; playing voices
   // `false`. Undefined in test mocks (treated as not paused → included).
   _paused?: boolean;
+  // Howler marks a voice `_ended === true` once it is stopped, ends naturally,
+  // or is a never-played pooled voice — even while `_paused` is also true. The
+  // resume enumeration keys on this to avoid replaying finished voices.
+  _ended?: boolean;
 }
 interface HowlWithSounds {
   _sounds: HowlInternalSound[];
@@ -446,7 +450,12 @@ class SoundImpl implements Sound {
     }
     let last = -1;
     for (const s of getSounds(this.howl)) {
-      if (s._paused === true && s._id !== undefined) {
+      // Resume only genuinely-paused voices. Howler marks stopped / naturally
+      // ended / never-played pooled voices `_paused === true` too, but with
+      // `_ended === true` — replaying those would restart finished SFX from
+      // zero or start a never-played voice (AUD-B-01; see the `_paused`
+      // comment on HowlInternalSound).
+      if (s._paused === true && s._ended !== true && s._id !== undefined) {
         this.howl.play(s._id);
         last = s._id;
       }
