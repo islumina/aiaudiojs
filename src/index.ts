@@ -86,14 +86,16 @@ export interface CrossfadeOptions {
    * See {@link CrossfadeCurve}.
    *
    * @remarks
-   * `'equal-power'` schedules sin/cos ramps scaled by the master volume
-   * directly on each sound's Web Audio GainNode (`_node.gain`) via
-   * `setValueCurveAtTime`: the outgoing sound follows `cos` (mv -> 0) and the
-   * incoming sound follows `sin` (0 -> mv), so `sin^2 + cos^2 = 1` keeps the
-   * perceived loudness flat. No extra GainNodes are inserted, so there is no
-   * re-routing to restore. AbortSignal cancellation calls
-   * `cancelScheduledValues(now)` then `setValueAtTime(currentValue, now)` on
-   * every scheduled gain (in that order) and resolves early (not rejecting).
+   * `'equal-power'` schedules relative `[0, 1]` sin/cos ramps directly on each
+   * sound's Web Audio GainNode (`_node.gain`) via `setValueCurveAtTime`: the
+   * outgoing sound follows `cos` (1 -> 0) and the incoming sound follows `sin`
+   * (0 -> 1), so `sin^2 + cos^2 = 1` keeps the perceived loudness flat. The
+   * curves are NOT scaled by the master volume — the master is applied exactly
+   * once via Howler's global gain, so scaling here as well would attenuate the
+   * crossfade to mv². No extra GainNodes are inserted, so there is no re-routing
+   * to restore. AbortSignal cancellation calls `cancelScheduledValues(now)` then
+   * `setValueAtTime(currentValue, now)` on every scheduled gain (in that order)
+   * and resolves early (not rejecting).
    *
    * `from` is assumed to be already playing; only `to` is started by the call.
    * Requires Web Audio mode — throws `AudioError` under the HTML5 fallback.
@@ -202,6 +204,22 @@ export interface Audio {
    * schedules sin/cos ramps on the AudioContext via `setValueCurveAtTime`,
    * preserving perceptual loudness; abort cancels the schedule cleanly.
    *
+   * **Failure channels — synchronous `throw` vs promise rejection.** This method
+   * reports errors on two different channels; a `.catch()` alone does NOT cover
+   * both, so wrap the call in `try { await audio.crossfade(...) } catch` to catch
+   * everything:
+   * - **Synchronously thrown (before a promise exists):**
+   *   `AudioDisposedError` when the Audio instance is disposed;
+   *   `AudioError` when `from` or `to` is a disposed Sound; and, on the
+   *   `equal-power` path only, `AudioError` when Howler is in HTML5 fallback mode
+   *   (no Web Audio context / no `_node.gain`) or its private `_sounds` internal
+   *   is unavailable (unexpected Howler version). On that last group the started
+   *   `to` voice is stopped before the throw, so no silent orphan is left.
+   * - **Rejected (a returned promise):** `AudioError` when `opts.duration` is not
+   *   a finite number `> 0`; `DOMException("AbortError")` when `opts.signal` is
+   *   already aborted at call time. Both of these are checked before any voice is
+   *   started, so a rejection never orphans a voice.
+   *
    * **F2 — concurrent crossfades on the same Sound:** Once a new `crossfade()`
    * starts on a `Sound`, any `AbortController` that was issued for a *previous*
    * crossfade on that same Sound **must not be fired** after the new crossfade
@@ -210,19 +228,25 @@ export interface Audio {
    * scheduled. Each crossfade owns its abort signal exclusively; the caller is
    * responsible for retiring old controllers before starting a new crossfade.
    *
-   * **F5 — equal-power assumes `from` is at masterVolume:** The equal-power path
-   * starts the `cos` ramp from the current masterVolume, not from a per-instance
-   * override. If `from` was started with a different volume (e.g.
-   * `from.play({ volume: 0.5 })`), the initial gain will snap to masterVolume at
-   * the start of the crossfade, which may produce an audible click. For a
-   * click-free transition, ensure `from` is playing at masterVolume before calling
+   * **F5 — equal-power gain is relative `[0, 1]`:** The equal-power ramps are
+   * scheduled as relative gain values (`from` follows `cos`: 1 → 0; `to` follows
+   * `sin`: 0 → 1); the master volume is applied exactly once via Howler's global
+   * gain, not folded into these curves. The `cos` ramp therefore starts the
+   * outgoing voice at relative gain `1`, regardless of any per-instance volume it
+   * was played with — so if `from` was started with `from.play({ volume: 0.5 })`,
+   * its gain snaps to relative `1` at the start of the crossfade, which may
+   * produce an audible click. For a click-free transition, ensure `from` is
+   * playing at its full relative gain before calling
    * `crossfade({ curve: 'equal-power' })`.
    *
-   * **F9 — rampSound throwing mid-crossfade:** If the AudioParam scheduling calls
-   * throw (e.g. the context is closed unexpectedly mid-crossfade), the `to` sound
-   * may be left running at its scheduled volume with no further ramp applied. This
-   * is a known defensive edge case; callers may handle it by catching the thrown
-   * `AudioError` and calling `to.stop()` explicitly.
+   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a `setValueCurveAtTime`
+   * / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
+   * is closed unexpectedly mid-crossfade), the `to` sound may be left running at
+   * its scheduled gain with no further ramp applied. This is a known defensive
+   * edge case distinct from the pre-flight `AudioError` throws above: it surfaces
+   * as the raw Web Audio exception, and callers that need to recover should catch
+   * it and call `to.stop()` explicitly. (The pre-flight HTML5-fallback / disposed
+   * / reshaped-`_sounds` throws, by contrast, already stop `to` for you.)
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
 
