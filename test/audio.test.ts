@@ -553,6 +553,50 @@ describe("D. Sound.play / pause / stop", () => {
     audio.dispose();
   });
 
+  it("D10. play({ loop: true, signal }) — abort STILL stops the voice after an `end` (loop boundary)", async () => {
+    // AUD-R-01: Howler's `end` fires at the end of EACH loop for a looping
+    // sound — playback continues. The abort wiring must survive that boundary,
+    // otherwise looping BGM + AbortSignal (the headline use case) silently
+    // loses cancellation after the first iteration.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const id = sound.play({ loop: true, signal: ctrl.signal });
+
+    // Loop boundary: `end` fires but the loop voice keeps playing (not ended).
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    // Aborting after the loop boundary MUST still stop the voice.
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy).toHaveBeenCalledWith(id);
+    expect(stopSpy.mock.calls.length).toBeGreaterThan(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D11. play({ loop: false, signal }) — abort wiring is still torn down on natural end (no leak)", async () => {
+    // The cleanup contract is unchanged for one-shot sounds: a non-loop voice
+    // that ends naturally removes the abort listener (D8), so a later abort is
+    // a no-op. This pins that the R-01 fix did not over-correct.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ loop: false, signal: ctrl.signal });
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
   it("D4. pause / stop delegate to Howler", async () => {
     const audio = createAudio({ autoUnlock: false });
     const sound = await audio.load("test.mp3");

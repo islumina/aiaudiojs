@@ -390,10 +390,11 @@ class SoundImpl implements Sound {
 
   play(opts?: PlayOptions): number {
     this.ck();
+    const looping = opts?.loop ?? false;
     const id = this.howl.play();
     this.howl.volume(opts?.volume ?? this.state.masterVolume, id);
     this.howl.rate(opts?.rate ?? 1, id);
-    this.howl.loop(opts?.loop ?? false, id);
+    this.howl.loop(looping, id);
     const signal = opts?.signal;
     if (signal !== undefined) {
       if (signal.aborted) {
@@ -414,8 +415,14 @@ class SoundImpl implements Sound {
           this._abortCleanups.delete(cleanup);
         };
 
-        // Howler per-id end/stop callbacks — natural sound termination.
-        const onEnd = (_id: number): void => cleanup();
+        // Howler per-id end/stop callbacks — natural sound termination. For a
+        // LOOPING voice, Howler fires `end` at every loop boundary while
+        // playback continues, so cleanup there would tear down the abort
+        // wiring mid-playback (AUD-R-01); only a non-loop `end` terminates the
+        // voice. `stop` always terminates, looping or not.
+        const onEnd = (_id: number): void => {
+          if (!looping) cleanup();
+        };
         const onStop = (_id: number): void => cleanup();
 
         onAbort = (): void => {
