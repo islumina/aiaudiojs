@@ -15,6 +15,7 @@ adapted for a micro-runtime library:
 | ------- | --------- | ----- |
 | `crossfade(curve: 'linear')` | stable | Shipped in 0.1.0. Default behaviour; backward-compatible. Delegates to `Howl.fade()`. Frozen on the 1.0 track (declared 0.4.0). |
 | `crossfade(curve: 'equal-power')` | stable | Shipped in 0.3.0. Requires Howler in Web Audio mode (`_sounds[i]._node` defined). HTML5 fallback mode throws `AudioError`; callers may downgrade to `'linear'`. Frozen on the 1.0 track (declared 0.4.0). |
+| `Sound.resume(id?)` | experimental | Shipped in 0.5.6. With an `id`, resumes that voice; without one, resumes every genuinely-paused voice (`_paused === true && _ended !== true`) and returns the last resumed id, or `-1` if none. Reaches into Howler's private `_sounds` to enumerate paused voices, so it is **not** frozen on the 1.0 track until that reach-in is validated against the supported Howler range; the signature may still adjust. Throws `AudioDisposedError` after `dispose()`. |
 | Spatial audio (PannerNode / HRTF) | experimental | Planned for v0.7 — roguelite room-direction audio. Not implemented in this cycle. API surface not yet defined. |
 
 ---

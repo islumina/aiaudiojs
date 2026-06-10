@@ -13,6 +13,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type AnyFn = (...args: unknown[]) => void;
 
+// ---------------------------------------------------------------------------
+// FIDELITY REBUILD (wave 2026-06-10): the previous mock modelled `_paused`
+// only via pause() and stubbed stop() as a no-op, so it could never see the
+// four P1s (resume restarting ended voices, master volume applied twice, loop
+// abort torn down at the loop boundary, the `_sounds` reach-in crash). This
+// mock reflects Howler's documented voice-pool semantics:
+//
+//   - a voice carries `_paused`, `_ended`, `_loop`, `_volume`, and a per-id
+//     `_node.gain` AudioParam (Web Audio mode);
+//   - stop(id) parks the voice as `_ended: true, _paused: true` (Howler marks
+//     stopped/idle pool voices paused+ended);
+//   - the per-id `end` event ends a NON-loop voice (`_ended: true`); a loop
+//     voice emits `end` at every loop boundary but is NOT terminated
+//     (`_ended` stays false), so playback continues;
+//   - pause(id) sets `_paused: true` only (does not touch `_ended`);
+//     play(id) resumes (`_paused: false, _ended: false`);
+//   - per-id volume(v, id) writes the voice's gain.value; a howl-global
+//     volume(v) (no id) records `_globalVolume`; `Howler.volume(v)` is the
+//     master and is recorded separately, so a test can compose the two.
+// ---------------------------------------------------------------------------
+
+interface MockVoice {
+  _id: number;
+  _paused: boolean;
+  _ended: boolean;
+  _loop: boolean;
+  _volume: number;
+  _node: { gain: { value: number } };
+}
+
 vi.mock("howler", () => {
   // Per-instance event handlers (once-fired: keyed by event name)
   const handlers = new Map<object, Map<string, AnyFn>>();
@@ -23,6 +53,9 @@ vi.mock("howler", () => {
 
   class Howl {
     opts: { src: string[]; preload?: boolean };
+    // Howl-global default volume (the no-id volume() setter). Distinct from
+    // each voice's per-id gain and from Howler.volume() (the master).
+    _globalVolume = 1;
 
     constructor(opts: { src: string[]; preload?: boolean }) {
       this.opts = opts;
@@ -68,8 +101,22 @@ vi.mock("howler", () => {
       if (idx !== -1) arr.splice(idx, 1);
     }
 
-    /** Test helper: emit an event (end or stop) for a specific sound id. */
+    /**
+     * Test helper: emit an event (end or stop) for a specific sound id.
+     * For `end`, applies Howler's loop semantics to the matching voice:
+     * a non-loop voice ends (`_ended = true`); a loop voice keeps playing
+     * (the event fires every loop boundary but does NOT terminate it).
+     */
     __emit(event: string, id: number): void {
+      if (event === "end") {
+        const voice = this._sounds.find((v) => v._id === id);
+        if (voice !== undefined && voice._loop !== true) {
+          // Natural end of a non-loop voice: Howler parks it _ended:true and
+          // _paused:true (the voice returns to the pool).
+          voice._ended = true;
+          voice._paused = true;
+        }
+      }
       const evMap = listeners.get(this);
       if (evMap === undefined) return;
       const idMap = evMap.get(event);
@@ -86,21 +133,50 @@ vi.mock("howler", () => {
       }
     }
 
-    _sounds: { _id: number; _paused: boolean }[] = [];
+    /**
+     * Test helper: seed a pool voice in an arbitrary state without going
+     * through play() — used to construct stopped / ended / never-played pool
+     * voices the way real Howler leaves them (`_paused: true, _ended: true`).
+     */
+    __seedVoice(v: Partial<MockVoice> & { _id: number }): MockVoice {
+      const voice: MockVoice = {
+        _id: v._id,
+        _paused: v._paused ?? false,
+        _ended: v._ended ?? false,
+        _loop: v._loop ?? false,
+        _volume: v._volume ?? 1,
+        _node: v._node ?? { gain: { value: v._volume ?? 1 } },
+      };
+      this._sounds.push(voice);
+      return voice;
+    }
+
+    _sounds: MockVoice[] = [];
 
     play(id?: number): number {
       if (id !== undefined) {
-        // Resume a specific paused voice.
+        // Resume a specific voice: Howler clears paused AND ended on replay.
         const s = this._sounds.find((v) => v._id === id);
-        if (s !== undefined) s._paused = false;
+        if (s !== undefined) {
+          s._paused = false;
+          s._ended = false;
+        }
         return id;
       }
       const newId = nextSoundId++;
-      this._sounds.push({ _id: newId, _paused: false });
+      this._sounds.push({
+        _id: newId,
+        _paused: false,
+        _ended: false,
+        _loop: false,
+        _volume: this._globalVolume,
+        _node: { gain: { value: this._globalVolume } },
+      });
       return newId;
     }
 
     pause(id?: number): void {
+      // pause() sets _paused only; _ended is untouched.
       if (id !== undefined) {
         const s = this._sounds.find((v) => v._id === id);
         if (s !== undefined) s._paused = true;
@@ -109,15 +185,47 @@ vi.mock("howler", () => {
       }
     }
 
-    stop(_id?: number): void {}
+    stop(id?: number): void {
+      // Howler parks a stopped voice as paused + ended (it returns to the pool
+      // available for replay). A bare-id stop with no matching voice is a no-op.
+      const mark = (s: MockVoice): void => {
+        s._ended = true;
+        s._paused = true;
+      };
+      if (id !== undefined) {
+        const s = this._sounds.find((v) => v._id === id);
+        if (s !== undefined) mark(s);
+      } else {
+        for (const s of this._sounds) mark(s);
+      }
+    }
 
     fade(_from: number, _to: number, _ms: number, _id?: number): void {}
 
-    volume(_v: number, _id?: number): void {}
+    volume(v?: number, id?: number): number {
+      if (v === undefined) return this._globalVolume;
+      if (id !== undefined) {
+        // Per-id volume: write the voice's gain param (relative [0,1] value).
+        const s = this._sounds.find((vc) => vc._id === id);
+        if (s !== undefined) {
+          s._volume = v;
+          s._node.gain.value = v;
+        }
+      } else {
+        this._globalVolume = v;
+      }
+      return v;
+    }
 
     rate(_r: number, _id?: number): void {}
 
-    loop(_l: boolean, _id?: number): void {}
+    loop(l?: boolean, id?: number): void {
+      if (l === undefined) return;
+      if (id !== undefined) {
+        const s = this._sounds.find((v) => v._id === id);
+        if (s !== undefined) s._loop = l;
+      }
+    }
 
     unload(): void {}
   }
@@ -130,6 +238,7 @@ vi.mock("howler", () => {
       get ctx() {
         return mockCtx;
       },
+      // Master volume sink — recorded so a test can compose per-id × master.
       volume: vi.fn(),
     },
     // Test helpers — allow individual tests to switch load-fail mode.
@@ -444,6 +553,50 @@ describe("D. Sound.play / pause / stop", () => {
     audio.dispose();
   });
 
+  it("D10. play({ loop: true, signal }) — abort STILL stops the voice after an `end` (loop boundary)", async () => {
+    // AUD-R-01: Howler's `end` fires at the end of EACH loop for a looping
+    // sound — playback continues. The abort wiring must survive that boundary,
+    // otherwise looping BGM + AbortSignal (the headline use case) silently
+    // loses cancellation after the first iteration.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const id = sound.play({ loop: true, signal: ctrl.signal });
+
+    // Loop boundary: `end` fires but the loop voice keeps playing (not ended).
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    // Aborting after the loop boundary MUST still stop the voice.
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy).toHaveBeenCalledWith(id);
+    expect(stopSpy.mock.calls.length).toBeGreaterThan(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D11. play({ loop: false, signal }) — abort wiring is still torn down on natural end (no leak)", async () => {
+    // The cleanup contract is unchanged for one-shot sounds: a non-loop voice
+    // that ends naturally removes the abort listener (D8), so a later abort is
+    // a no-op. This pins that the R-01 fix did not over-correct.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ loop: false, signal: ctrl.signal });
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
   it("D4. pause / stop delegate to Howler", async () => {
     const audio = createAudio({ autoUnlock: false });
     const sound = await audio.load("test.mp3");
@@ -629,6 +782,40 @@ describe("G. crossfade", () => {
     audio.dispose();
     vi.useRealTimers();
   });
+
+  it("G7. linear crossfade aborted mid-flight detaches the abort listener with the exact handler (prior-M1 leak pin)", async () => {
+    // AUD-C-01 / prior-wave M1: the linear abort branch resolved the promise
+    // but skipped cleanupAbort(), so it relied entirely on { once: true } and
+    // never explicitly detached its listener — the equal-power path did. The
+    // shared resolveAfterWithAbort helper now detaches on BOTH the normal and
+    // aborted paths. Pin that the EXACT handler registered for "abort" is the
+    // one removed (capture it from addEventListener), and that a second abort
+    // is a silent no-op afterwards.
+    vi.useFakeTimers();
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const p = audio.crossfade(from, to, { duration: 2, signal: ctrl.signal });
+
+    // Capture the exact handler the crossfade registered for "abort".
+    const addCall = addSpy.mock.calls.find((c) => c[0] === "abort");
+    expect(addCall).toBeDefined();
+    const registered = addCall![1];
+
+    ctrl.abort();
+    await expect(p).resolves.toBeUndefined();
+
+    // The SAME handler must have been removed — no listener left on the signal.
+    expect(removeSpy).toHaveBeenCalledWith("abort", registered);
+
+    // A second abort must be a silent no-op (nothing left wired).
+    expect(() => ctrl.abort()).not.toThrow();
+    audio.dispose();
+    vi.useRealTimers();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -701,6 +888,247 @@ describe("I. Sound.resume", () => {
     const sound = await audio.load("test.mp3");
     sound.dispose();
     expect(() => sound.resume()).toThrow(AudioDisposedError);
+    audio.dispose();
+  });
+
+  // AUD-B-01 — the no-arg enumeration must resume ONLY genuinely-paused
+  // voices. In real Howler, stop(), natural end, and the never-played pooled
+  // voice all leave `_paused === true` with `_ended === true`; resuming them
+  // replays finished SFX from zero (or starts a never-played voice). The
+  // filter must also require `_ended !== true`.
+
+  it("I5. resume() does NOT replay a stopped voice (stop → _paused+_ended)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    sound.stop(id); // Howler: stopped voice parks _paused:true, _ended:true
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I6. resume() does NOT replay a naturally-ended voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    // Natural end of a non-loop voice: _ended becomes true.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I7. resume() does NOT start a never-played pooled voice (_paused+_ended)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    // A pool voice that was loaded but never played: Howler leaves it
+    // _paused:true, _ended:true.
+    (
+      sound.nativeHowl as unknown as {
+        __seedVoice: (v: { _id: number; _paused: boolean; _ended: boolean }) => void;
+      }
+    ).__seedVoice({ _id: 42, _paused: true, _ended: true });
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).not.toHaveBeenCalled();
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I8. resume() resumes a genuinely paused voice but skips a sibling ended voice; returns the paused id", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const pausedId = sound.play();
+    const endedId = sound.play();
+    sound.pause(pausedId); // genuinely paused: _paused:true, _ended:false
+    sound.stop(endedId); // parked: _paused:true, _ended:true
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume();
+    expect(playSpy).toHaveBeenCalledWith(pausedId);
+    expect(playSpy).not.toHaveBeenCalledWith(endedId);
+    expect(result).toBe(pausedId);
+    audio.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J. AUD-B-03 — _sounds reach-in drift tolerance (centralised guarded accessor)
+//
+// peerDependency `howler: ^2.2.4` auto-accepts a 2.3.x whose private `_sounds`
+// internal may reshape or vanish. Every reach-in (resume enumeration :436,
+// equal-power filter :596/:631, gain access :612) must degrade to a named
+// `AudioError`, NEVER a raw TypeError. On the crossfade path the started `to`
+// voice must be stopped before the throw so no silent orphan voice is left.
+// ---------------------------------------------------------------------------
+
+describe("J. _sounds reach-in drift tolerance (AUD-B-03)", () => {
+  it("J1. equal-power crossfade with a reshaped (missing) `from._sounds` throws AudioError, not raw TypeError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    from.play();
+    // Simulate a howler upgrade that renamed/removed `_sounds`.
+    (from.nativeHowl as unknown as { _sounds?: unknown })._sounds = undefined;
+    let err: unknown;
+    try {
+      audio.crossfade(from, to, { duration: 1, curve: "equal-power" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(AudioError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    audio.dispose();
+  });
+
+  it("J2. equal-power crossfade does not orphan the started `to` voice when `from._sounds` is reshaped — to.stop(toId) runs before the throw", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    from.play();
+    const stopSpy = vi.spyOn(to.nativeHowl, "stop");
+    (from.nativeHowl as unknown as { _sounds?: unknown })._sounds = undefined;
+    let threw = false;
+    try {
+      audio.crossfade(from, to, { duration: 1, curve: "equal-power" });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    // `to.play({ volume: 0 })` already started a voice; it MUST be stopped so
+    // no silent orphan is left playing after the failure.
+    expect(stopSpy).toHaveBeenCalled();
+    audio.dispose();
+  });
+
+  it("J3. resume() with a reshaped (missing) `_sounds` throws AudioError, not raw TypeError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    sound.play();
+    (sound.nativeHowl as unknown as { _sounds?: unknown })._sounds = undefined;
+    let err: unknown;
+    try {
+      sound.resume();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(AudioError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    audio.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K. AUD-B-02 — master volume must be applied exactly once
+//
+// Invariant: per-sound gain is a RELATIVE [0,1] value; the master lives ONLY
+// in Howler's global gain (`Howler.volume`). The per-id default play volume
+// must be 1 (relative), not the masterVolume — otherwise Howler global × the
+// per-id default double-attenuates to mv², and voices started before vs after
+// a volume change play at different loudness.
+// ---------------------------------------------------------------------------
+
+describe("K. master volume applied once (AUD-B-02)", () => {
+  it("K1. play() with no per-call volume uses per-id 1 (relative), not masterVolume — effective = master only", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const id = sound.play(); // no per-call volume
+    // Per-id gain must be the relative default 1 — NOT 0.5. With master = 0.5
+    // (Howler global), effective loudness = 1 × 0.5 = 0.5, not 0.5 × 0.5 = mv².
+    expect(volSpy).toHaveBeenCalledWith(1, id);
+    expect(volSpy).not.toHaveBeenCalledWith(0.5, id);
+    audio.dispose();
+  });
+
+  it("K2. an explicit per-call volume is passed through verbatim (relative), composed once with master", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const id = sound.play({ volume: 0.5 });
+    // Caller asked for 0.5 (relative); it is forwarded as-is. Effective via the
+    // Howler global master (0.5) = 0.5 × 0.5 = 0.25, applied once at each stage.
+    expect(volSpy).toHaveBeenCalledWith(0.5, id);
+    audio.dispose();
+  });
+
+  it("K3. voices started before and after a master change keep the SAME per-id default (relative 1)", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 1 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const before = sound.play();
+    audio.volume = 0.25; // master change
+    const after = sound.play();
+    // Both plays use the relative default 1; the master (0.25) applies once
+    // globally to both — no per-id divergence by play time.
+    expect(volSpy).toHaveBeenCalledWith(1, before);
+    expect(volSpy).toHaveBeenCalledWith(1, after);
+    audio.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L. AUD-S-02 — non-finite numeric inputs must not bypass the guards
+//
+// clamp() documented as "[0,1]" let NaN through (min/max(NaN) === NaN),
+// poisoning state.masterVolume; the crossfade duration guard `<= 0` let NaN
+// pass (NaN <= 0 is false), reaching setValueAtTime/setValueCurveAtTime which
+// throw a raw RangeError AFTER `to.play()` already started a silent voice.
+// ---------------------------------------------------------------------------
+
+describe("L. non-finite inputs (AUD-S-02)", () => {
+  it("L1. createAudio({ volume: NaN }) — masterVolume normalises to a finite value, not NaN", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: Number.NaN });
+    expect(Number.isFinite(audio.volume)).toBe(true);
+    expect(audio.volume).toBe(0);
+    audio.dispose();
+  });
+
+  it("L2. audio.volume = NaN / Infinity — setter rejects non-finite, stays in [0,1]", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    audio.volume = Number.NaN;
+    expect(Number.isFinite(audio.volume)).toBe(true);
+    expect(audio.volume).toBe(0);
+    audio.volume = Number.POSITIVE_INFINITY;
+    expect(audio.volume).toBe(1); // +Inf clamps to the [0,1] ceiling
+    audio.volume = Number.NEGATIVE_INFINITY;
+    expect(audio.volume).toBe(0); // -Inf clamps to the [0,1] floor
+    audio.dispose();
+  });
+
+  it("L3. crossfade({ duration: NaN }) rejects with AudioError (not a raw throw)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    await expect(audio.crossfade(from, to, { duration: Number.NaN })).rejects.toBeInstanceOf(
+      AudioError,
+    );
+    audio.dispose();
+  });
+
+  it("L4. equal-power crossfade({ duration: NaN }) rejects with AudioError before any voice is orphaned", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    from.play();
+    const err = await audio
+      .crossfade(from, to, { duration: Number.NaN, curve: "equal-power" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AudioError);
+    expect(err).not.toBeInstanceOf(RangeError);
+    audio.dispose();
+  });
+
+  it("L5. crossfade({ duration: Infinity }) rejects with AudioError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    await expect(
+      audio.crossfade(from, to, { duration: Number.POSITIVE_INFINITY }),
+    ).rejects.toBeInstanceOf(AudioError);
     audio.dispose();
   });
 });

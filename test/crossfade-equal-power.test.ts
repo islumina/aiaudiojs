@@ -115,7 +115,7 @@ vi.mock("howler", () => {
 // Imports (after vi.mock hoisting)
 // ---------------------------------------------------------------------------
 
-import { __forceCtxUndefined, __getMockCtx, __resetSoundId, __setHtml5Mode } from "howler";
+import { Howler, __forceCtxUndefined, __getMockCtx, __resetSoundId, __setHtml5Mode } from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ describe("B. equal-power baseline", () => {
     vi.useRealTimers();
   });
 
-  it("B9: terminal _volume synced — outgoing 0, incoming mv (keeps Howler.mute() consistent)", async () => {
+  it("B9: terminal _volume synced — outgoing 0, incoming 1 (RELATIVE; keeps Howler.mute() consistent)", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
@@ -587,8 +587,13 @@ describe("E. HTML5 fallback", () => {
 // Group F — masterVolume scaling
 // ---------------------------------------------------------------------------
 
-describe("F. masterVolume scaling", () => {
-  it("F1: createAudio({ volume: 0.5 }) — from curve[0] ≈ 0.5, to curve[63] ≈ 0.5", async () => {
+describe("F. masterVolume application (AUD-B-02: master applied once)", () => {
+  it("F1: createAudio({ volume: 0.5 }) — curves stay RELATIVE [0,1]; master applied once via Howler.volume(0.5)", async () => {
+    // AUD-B-02: the equal-power curves must NOT be scaled by masterVolume —
+    // the master is applied exactly once via Howler's global gain. Scaling the
+    // per-sound curves by mv here, on top of the global master, would
+    // double-attenuate the crossfade to mv². So at master 0.5 the curves still
+    // run 1→0 (from) and 0→1 (to); Howler.volume(0.5) carries the master.
     vi.useFakeTimers();
     const audio = createAudio({ autoUnlock: false, volume: 0.5 });
     const from = await audio.load("a.mp3");
@@ -610,9 +615,13 @@ describe("F. masterVolume scaling", () => {
     const fromCurve = fromGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
     const toCurve = toGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
 
-    // mv=0.5: from cos[0] = 0.5, to sin[63] = 0.5
-    expect(fromCurve[0]).toBeCloseTo(0.5, 5);
-    expect(toCurve[63]).toBeCloseTo(0.5, 5);
+    // Curves are relative and independent of master: from 1→0, to 0→1.
+    expect(fromCurve[0]).toBeCloseTo(1, 5);
+    expect(fromCurve[63]).toBeCloseTo(0, 5);
+    expect(toCurve[0]).toBeCloseTo(0, 5);
+    expect(toCurve[63]).toBeCloseTo(1, 5);
+    // Master is applied exactly once, globally.
+    expect(Howler.volume).toHaveBeenCalledWith(0.5);
     audio.dispose();
     vi.useRealTimers();
   });

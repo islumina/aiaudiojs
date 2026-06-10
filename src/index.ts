@@ -86,14 +86,16 @@ export interface CrossfadeOptions {
    * See {@link CrossfadeCurve}.
    *
    * @remarks
-   * `'equal-power'` schedules sin/cos ramps scaled by the master volume
-   * directly on each sound's Web Audio GainNode (`_node.gain`) via
-   * `setValueCurveAtTime`: the outgoing sound follows `cos` (mv -> 0) and the
-   * incoming sound follows `sin` (0 -> mv), so `sin^2 + cos^2 = 1` keeps the
-   * perceived loudness flat. No extra GainNodes are inserted, so there is no
-   * re-routing to restore. AbortSignal cancellation calls
-   * `cancelScheduledValues(now)` then `setValueAtTime(currentValue, now)` on
-   * every scheduled gain (in that order) and resolves early (not rejecting).
+   * `'equal-power'` schedules relative `[0, 1]` sin/cos ramps directly on each
+   * sound's Web Audio GainNode (`_node.gain`) via `setValueCurveAtTime`: the
+   * outgoing sound follows `cos` (1 -> 0) and the incoming sound follows `sin`
+   * (0 -> 1), so `sin^2 + cos^2 = 1` keeps the perceived loudness flat. The
+   * curves are NOT scaled by the master volume — the master is applied exactly
+   * once via Howler's global gain, so scaling here as well would attenuate the
+   * crossfade to mv². No extra GainNodes are inserted, so there is no re-routing
+   * to restore. AbortSignal cancellation calls `cancelScheduledValues(now)` then
+   * `setValueAtTime(currentValue, now)` on every scheduled gain (in that order)
+   * and resolves early (not rejecting).
    *
    * `from` is assumed to be already playing; only `to` is started by the call.
    * Requires Web Audio mode — throws `AudioError` under the HTML5 fallback.
@@ -202,6 +204,22 @@ export interface Audio {
    * schedules sin/cos ramps on the AudioContext via `setValueCurveAtTime`,
    * preserving perceptual loudness; abort cancels the schedule cleanly.
    *
+   * **Failure channels — synchronous `throw` vs promise rejection.** This method
+   * reports errors on two different channels; a `.catch()` alone does NOT cover
+   * both, so wrap the call in `try { await audio.crossfade(...) } catch` to catch
+   * everything:
+   * - **Synchronously thrown (before a promise exists):**
+   *   `AudioDisposedError` when the Audio instance is disposed;
+   *   `AudioError` when `from` or `to` is a disposed Sound; and, on the
+   *   `equal-power` path only, `AudioError` when Howler is in HTML5 fallback mode
+   *   (no Web Audio context / no `_node.gain`) or its private `_sounds` internal
+   *   is unavailable (unexpected Howler version). On that last group the started
+   *   `to` voice is stopped before the throw, so no silent orphan is left.
+   * - **Rejected (a returned promise):** `AudioError` when `opts.duration` is not
+   *   a finite number `> 0`; `DOMException("AbortError")` when `opts.signal` is
+   *   already aborted at call time. Both of these are checked before any voice is
+   *   started, so a rejection never orphans a voice.
+   *
    * **F2 — concurrent crossfades on the same Sound:** Once a new `crossfade()`
    * starts on a `Sound`, any `AbortController` that was issued for a *previous*
    * crossfade on that same Sound **must not be fired** after the new crossfade
@@ -210,19 +228,25 @@ export interface Audio {
    * scheduled. Each crossfade owns its abort signal exclusively; the caller is
    * responsible for retiring old controllers before starting a new crossfade.
    *
-   * **F5 — equal-power assumes `from` is at masterVolume:** The equal-power path
-   * starts the `cos` ramp from the current masterVolume, not from a per-instance
-   * override. If `from` was started with a different volume (e.g.
-   * `from.play({ volume: 0.5 })`), the initial gain will snap to masterVolume at
-   * the start of the crossfade, which may produce an audible click. For a
-   * click-free transition, ensure `from` is playing at masterVolume before calling
+   * **F5 — equal-power gain is relative `[0, 1]`:** The equal-power ramps are
+   * scheduled as relative gain values (`from` follows `cos`: 1 → 0; `to` follows
+   * `sin`: 0 → 1); the master volume is applied exactly once via Howler's global
+   * gain, not folded into these curves. The `cos` ramp therefore starts the
+   * outgoing voice at relative gain `1`, regardless of any per-instance volume it
+   * was played with — so if `from` was started with `from.play({ volume: 0.5 })`,
+   * its gain snaps to relative `1` at the start of the crossfade, which may
+   * produce an audible click. For a click-free transition, ensure `from` is
+   * playing at its full relative gain before calling
    * `crossfade({ curve: 'equal-power' })`.
    *
-   * **F9 — rampSound throwing mid-crossfade:** If the AudioParam scheduling calls
-   * throw (e.g. the context is closed unexpectedly mid-crossfade), the `to` sound
-   * may be left running at its scheduled volume with no further ramp applied. This
-   * is a known defensive edge case; callers may handle it by catching the thrown
-   * `AudioError` and calling `to.stop()` explicitly.
+   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a `setValueCurveAtTime`
+   * / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
+   * is closed unexpectedly mid-crossfade), the `to` sound may be left running at
+   * its scheduled gain with no further ramp applied. This is a known defensive
+   * edge case distinct from the pre-flight `AudioError` throws above: it surfaces
+   * as the raw Web Audio exception, and callers that need to recover should catch
+   * it and call `to.stop()` explicitly. (The pre-flight HTML5-fallback / disposed
+   * / reshaped-`_sounds` throws, by contrast, already stop `to` for you.)
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
 
@@ -313,9 +337,26 @@ interface HowlInternalSound {
   // Howler marks idle/stopped pool voices `_paused === true`; playing voices
   // `false`. Undefined in test mocks (treated as not paused → included).
   _paused?: boolean;
+  // Howler marks a voice `_ended === true` once it is stopped, ends naturally,
+  // or is a never-played pooled voice — even while `_paused` is also true. The
+  // resume enumeration keys on this to avoid replaying finished voices.
+  _ended?: boolean;
 }
 interface HowlWithSounds {
   _sounds: HowlInternalSound[];
+}
+
+// Single guarded entry point for every `_sounds` private-internal reach-in
+// (resume enumeration, equal-power voice filter + gain access). Howler is a
+// `^2.2.4` peer, so a 2.3.x could rename or drop `_sounds`; mapping a missing
+// shape to a named `AudioError` here keeps every call site degrading the same
+// way instead of crashing with a raw TypeError (AUD-B-03).
+function getSounds(howl: Howl): HowlInternalSound[] {
+  const raw = (howl as unknown as Partial<HowlWithSounds>)._sounds;
+  if (!Array.isArray(raw)) {
+    throw new AudioError("howler internal `_sounds` is unavailable (unexpected howler version?)");
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +380,62 @@ interface State {
 const noop = (): void => {};
 
 function clamp(v: number): number {
+  // Guard NaN first: Math.min/max(NaN) is NaN, which would poison
+  // state.masterVolume and propagate to Howler.volume (AUD-S-02). NaN
+  // normalises to 0 (silent) — the safe floor. ±Infinity is left to the
+  // min/max below, which correctly clamps it to the [0,1] ceiling/floor.
+  if (Number.isNaN(v)) return 0;
   return Math.min(1, Math.max(0, v));
+}
+
+/**
+ * Shared resolve-after-duration-with-abort lifecycle for both crossfade paths.
+ *
+ * Resolves the returned promise after `durationMs` (normal completion). If
+ * `signal` aborts first, runs `onAbort()` (the path-specific side effect — e.g.
+ * freezing the equal-power ramps; a no-op for the linear path) and resolves
+ * early. BOTH completion paths clear the timer and remove the abort listener,
+ * so the abort handler can never outlive the crossfade — this is the single
+ * source of the cancellation state machine the two paths used to hand-roll
+ * separately (AUD-C-01), and it closes the prior-wave M1 leak where the linear
+ * path's abort branch never detached its listener.
+ */
+function resolveAfterWithAbort(
+  durationMs: number,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+
+    const detachAbort = (): void => {
+      if (signal !== undefined && abortListener !== undefined) {
+        signal.removeEventListener("abort", abortListener);
+        abortListener = undefined;
+      }
+    };
+
+    const finish = (aborted: boolean): void => {
+      if (done) return;
+      done = true;
+      if (aborted) onAbort();
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      detachAbort();
+      resolve();
+    };
+
+    timer = setTimeout(() => finish(false), durationMs);
+
+    if (signal !== undefined) {
+      abortListener = () => finish(true);
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -373,10 +469,16 @@ class SoundImpl implements Sound {
 
   play(opts?: PlayOptions): number {
     this.ck();
+    const looping = opts?.loop ?? false;
     const id = this.howl.play();
-    this.howl.volume(opts?.volume ?? this.state.masterVolume, id);
+    // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
+    // once via Howler's global gain (`Howler.volume`). Defaulting this to the
+    // masterVolume would double-attenuate (Howler global × per-id default →
+    // mv²) and make voices started before vs after a master change diverge in
+    // loudness (AUD-B-02). Default is therefore 1, not masterVolume.
+    this.howl.volume(opts?.volume ?? 1, id);
     this.howl.rate(opts?.rate ?? 1, id);
-    this.howl.loop(opts?.loop ?? false, id);
+    this.howl.loop(looping, id);
     const signal = opts?.signal;
     if (signal !== undefined) {
       if (signal.aborted) {
@@ -397,8 +499,14 @@ class SoundImpl implements Sound {
           this._abortCleanups.delete(cleanup);
         };
 
-        // Howler per-id end/stop callbacks — natural sound termination.
-        const onEnd = (_id: number): void => cleanup();
+        // Howler per-id end/stop callbacks — natural sound termination. For a
+        // LOOPING voice, Howler fires `end` at every loop boundary while
+        // playback continues, so cleanup there would tear down the abort
+        // wiring mid-playback (AUD-R-01); only a non-loop `end` terminates the
+        // voice. `stop` always terminates, looping or not.
+        const onEnd = (_id: number): void => {
+          if (!looping) cleanup();
+        };
         const onStop = (_id: number): void => cleanup();
 
         onAbort = (): void => {
@@ -432,8 +540,13 @@ class SoundImpl implements Sound {
       return id;
     }
     let last = -1;
-    for (const s of (this.howl as unknown as HowlWithSounds)._sounds ?? []) {
-      if (s._paused === true && s._id !== undefined) {
+    for (const s of getSounds(this.howl)) {
+      // Resume only genuinely-paused voices. Howler marks stopped / naturally
+      // ended / never-played pooled voices `_paused === true` too, but with
+      // `_ended === true` — replaying those would restart finished SFX from
+      // zero or start a never-played voice (AUD-B-01; see the `_paused`
+      // comment on HowlInternalSound).
+      if (s._paused === true && s._ended !== true && s._id !== undefined) {
         this.howl.play(s._id);
         last = s._id;
       }
@@ -593,9 +706,7 @@ export function createAudio(opts?: AudioOptions): Audio {
   // `_node.gain` IS the per-sound volume param. In HTML5 mode `_node` is an
   // <audio> element with no `.gain`, so it is filtered out (empty array there).
   function webAudioSounds(howl: Howl): HowlInternalSound[] {
-    return (howl as unknown as HowlWithSounds)._sounds.filter(
-      (s) => s._node?.gain !== undefined && s._paused !== true,
-    );
+    return getSounds(howl).filter((s) => s._node?.gain !== undefined && s._paused !== true);
   }
 
   // Schedule an equal-power ramp on one sound's gain and sync Howler's
@@ -628,69 +739,50 @@ export function createAudio(opts?: AudioOptions): Audio {
     // Howl.fade() is not used in this path. No extra GainNodes are inserted,
     // so there is nothing to re-route or restore.
     const toId = to.play({ volume: 0 });
-    const toSounds = webAudioSounds(to.nativeHowl).filter((s) => s._id === toId);
-    if (toSounds.length === 0) {
+    // Past this point a voice is live on `to`; any reach-in failure (HTML5
+    // fallback OR a reshaped `_sounds`) must stop it before throwing so no
+    // silent orphan voice is left playing (AUD-B-03).
+    let toSounds: HowlInternalSound[];
+    let fromSounds: HowlInternalSound[];
+    try {
+      toSounds = webAudioSounds(to.nativeHowl).filter((s) => s._id === toId);
+      if (toSounds.length === 0) {
+        throw new AudioError(
+          "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
+        );
+      }
+      fromSounds = webAudioSounds(from.nativeHowl);
+    } catch (err) {
       to.stop(toId);
-      throw new AudioError("equal-power crossfade requires Web Audio mode; HTML5 fallback active");
+      throw err;
     }
-    const fromSounds = webAudioSounds(from.nativeHowl);
 
-    const mv = state.masterVolume;
     const now = ctx.currentTime;
     const { sin, cos } = ensureCurves();
     const dur = cfOpts.duration;
-    const cosScaled = cos.map((v) => v * mv);
-    const sinScaled = sin.map((v) => v * mv);
-    // Outgoing: mv -> 0 along cos. Incoming: 0 -> mv along sin. sin^2+cos^2=1
-    // keeps perceived loudness flat. Terminal state mirrors the linear path
-    // (from at 0, to at mv) and is written to each sound's `_volume`.
+    // Per-sound gain is a RELATIVE [0,1] value; the master is applied exactly
+    // once via Howler's global gain (AUD-B-02). The sin/cos curves are NOT
+    // scaled by masterVolume — doing so here, on top of the global master,
+    // would attenuate the crossfade to mv². Outgoing: 1 -> 0 along cos.
+    // Incoming: 0 -> 1 along sin. sin^2 + cos^2 = 1 keeps perceived loudness
+    // flat. Terminal `_volume` is the relative value (from at 0, to at 1).
     // `touched` holds the sound objects so the abort branch can sync `_volume`.
     const touched = [...fromSounds, ...toSounds];
-    for (const s of fromSounds) rampSound(s, cosScaled, 0, now, dur);
-    for (const s of toSounds) rampSound(s, sinScaled, mv, now, dur);
+    for (const s of fromSounds) rampSound(s, cos, 0, now, dur);
+    for (const s of toSounds) rampSound(s, sin, 1, now, dur);
     const durationMs = dur * 1000;
-    return new Promise<void>((resolve) => {
-      let done = false;
-      const finish = (abortedMidway: boolean): void => {
-        if (done) return;
-        done = true;
-        if (abortedMidway) {
-          // Freeze each ramp at its current value (Web Audio requires
-          // cancelScheduledValues THEN setValueAtTime, in that order) and
-          // sync `_volume` to the frozen position so a later Howler.mute() /
-          // unmute() re-derives the correct gain rather than the terminal.
-          const t = ctx.currentTime;
-          for (const s of touched) {
-            const g = s._node?.gain;
-            if (g === undefined) continue;
-            g.cancelScheduledValues(t);
-            g.setValueAtTime(g.value, t);
-            s._volume = g.value;
-          }
-        }
-        cleanupAbort();
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        resolve();
-      };
-
-      let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
-        () => finish(false),
-        durationMs,
-      );
-
-      let onAbort: (() => void) | undefined;
-      const cleanupAbort = (): void => {
-        if (cfOpts.signal !== undefined && onAbort !== undefined) {
-          cfOpts.signal.removeEventListener("abort", onAbort);
-          onAbort = undefined;
-        }
-      };
-      if (cfOpts.signal !== undefined) {
-        onAbort = () => finish(true);
-        cfOpts.signal.addEventListener("abort", onAbort, { once: true });
+    return resolveAfterWithAbort(durationMs, cfOpts.signal, () => {
+      // Abort side effect: freeze each ramp at its current value (Web Audio
+      // requires cancelScheduledValues THEN setValueAtTime, in that order) and
+      // sync `_volume` to the frozen position so a later Howler.mute() /
+      // unmute() re-derives the correct gain rather than the terminal.
+      const t = ctx.currentTime;
+      for (const s of touched) {
+        const g = s._node?.gain;
+        if (g === undefined) continue;
+        g.cancelScheduledValues(t);
+        g.setValueAtTime(g.value, t);
+        s._volume = g.value;
       }
     });
   }
@@ -701,8 +793,14 @@ export function createAudio(opts?: AudioOptions): Audio {
       throw new AudioError("cannot crossfade a disposed Sound");
     }
     const durationMs = cfOpts.duration * 1000;
-    if (cfOpts.duration <= 0) {
-      return Promise.reject(new AudioError("crossfade duration must be > 0"));
+    // Reject non-finite durations as well as <= 0. NaN <= 0 is false, so the
+    // old guard let NaN through to setTimeout(resolve, NaN) (fires instantly,
+    // broken fade) and to setValueCurveAtTime (raw RangeError) after to.play()
+    // already started a silent voice; +Infinity would hang the resolve timer
+    // forever (AUD-S-02). This guard runs before the equal-power branch and
+    // before any to.play(), so no orphan voice is possible.
+    if (!Number.isFinite(cfOpts.duration) || cfOpts.duration <= 0) {
+      return Promise.reject(new AudioError("crossfade duration must be a finite number > 0"));
     }
     if (cfOpts.signal?.aborted === true) {
       return Promise.reject(new DOMException("Crossfade aborted", "AbortError"));
@@ -713,35 +811,19 @@ export function createAudio(opts?: AudioOptions): Audio {
     }
 
     to.play({ volume: 0 });
-    from.nativeHowl.fade(state.masterVolume, 0, durationMs);
-    to.nativeHowl.fade(0, state.masterVolume, durationMs);
-    return new Promise<void>((resolve) => {
-      const signal = cfOpts.signal;
-      let onAbort: (() => void) | undefined;
-      const cleanupAbort = (): void => {
-        if (signal !== undefined && onAbort !== undefined) {
-          signal.removeEventListener("abort", onAbort);
-          onAbort = undefined;
-        }
-      };
-      let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-        timer = undefined;
-        cleanupAbort();
-        resolve();
-      }, durationMs);
-      if (signal !== undefined) {
-        onAbort = (): void => {
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
-          // NOTE: Howler.fade() in flight CANNOT be cancelled; the fade
-          // keeps running silently. We resolve early so callers can move on.
-          resolve();
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
+    // Per-sound fade endpoints are RELATIVE [0,1] values; the master is
+    // applied exactly once via Howler's global gain (AUD-B-02). Fading to/from
+    // state.masterVolume here would double-attenuate (Howler global × per-id)
+    // and make the crossfade loudness diverge when the master is not 1.
+    // Outgoing: 1 -> 0. Incoming: 0 -> 1.
+    from.nativeHowl.fade(1, 0, durationMs);
+    to.nativeHowl.fade(0, 1, durationMs);
+    // Abort side effect is a no-op: Howler.fade() in flight CANNOT be cancelled
+    // (the ramp keeps running silently); the shared helper just resolves early
+    // and detaches the listener so callers can move on. Detaching on BOTH the
+    // normal and aborted paths is what the helper guarantees — the linear path
+    // used to skip it on abort (prior-wave M1).
+    return resolveAfterWithAbort(durationMs, cfOpts.signal, noop);
   }
 
   function doDispose(): void {
