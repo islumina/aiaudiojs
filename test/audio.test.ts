@@ -986,3 +986,52 @@ describe("J. _sounds reach-in drift tolerance (AUD-B-03)", () => {
     audio.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// K. AUD-B-02 — master volume must be applied exactly once
+//
+// Invariant: per-sound gain is a RELATIVE [0,1] value; the master lives ONLY
+// in Howler's global gain (`Howler.volume`). The per-id default play volume
+// must be 1 (relative), not the masterVolume — otherwise Howler global × the
+// per-id default double-attenuates to mv², and voices started before vs after
+// a volume change play at different loudness.
+// ---------------------------------------------------------------------------
+
+describe("K. master volume applied once (AUD-B-02)", () => {
+  it("K1. play() with no per-call volume uses per-id 1 (relative), not masterVolume — effective = master only", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const id = sound.play(); // no per-call volume
+    // Per-id gain must be the relative default 1 — NOT 0.5. With master = 0.5
+    // (Howler global), effective loudness = 1 × 0.5 = 0.5, not 0.5 × 0.5 = mv².
+    expect(volSpy).toHaveBeenCalledWith(1, id);
+    expect(volSpy).not.toHaveBeenCalledWith(0.5, id);
+    audio.dispose();
+  });
+
+  it("K2. an explicit per-call volume is passed through verbatim (relative), composed once with master", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const id = sound.play({ volume: 0.5 });
+    // Caller asked for 0.5 (relative); it is forwarded as-is. Effective via the
+    // Howler global master (0.5) = 0.5 × 0.5 = 0.25, applied once at each stage.
+    expect(volSpy).toHaveBeenCalledWith(0.5, id);
+    audio.dispose();
+  });
+
+  it("K3. voices started before and after a master change keep the SAME per-id default (relative 1)", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 1 });
+    const sound = await audio.load("test.mp3");
+    const volSpy = vi.spyOn(sound.nativeHowl, "volume");
+    const before = sound.play();
+    audio.volume = 0.25; // master change
+    const after = sound.play();
+    // Both plays use the relative default 1; the master (0.25) applies once
+    // globally to both — no per-id divergence by play time.
+    expect(volSpy).toHaveBeenCalledWith(1, before);
+    expect(volSpy).toHaveBeenCalledWith(1, after);
+    audio.dispose();
+  });
+});

@@ -1,10 +1,13 @@
-// aiaudiojs v0.3.0 — fast-check property test for equal-power crossfade.
+// aiaudiojs — fast-check property test for equal-power crossfade.
 //
 // Property: for any duration in [0.01, 600] and masterVolume in [0, 1],
-// the sin/cos curves scheduled on the GainNodes are Float32Array(64),
-// the third arg equals duration, endpoints match mv*sin/cos(pi/2),
-// and for mv > 0 the constant-power invariant (sin^2 + cos^2 = 1) holds
-// within 1e-3 at every sample.
+// the sin/cos curves scheduled on the GainNodes are Float32Array(64) and the
+// third arg equals duration. The curves are RELATIVE [0,1] values — the master
+// is applied exactly once via Howler's global gain (AUD-B-02), NOT folded into
+// the per-sound curves — so the endpoints are sin/cos(pi/2) independent of mv
+// (from [0]≈1,[63]≈0; to [0]≈0,[63]≈1), the constant-power invariant
+// (sin^2 + cos^2 = 1) holds at every sample directly, and Howler.volume(mv)
+// carries the master.
 
 import * as fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,7 +101,7 @@ vi.mock("howler", () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { __getMockCtx, __resetSoundId } from "howler";
+import { Howler, __getMockCtx, __resetSoundId } from "howler";
 import { createAudio } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -197,21 +200,22 @@ describe("equal-power crossfade constant-power property", () => {
 
           const mv = masterVolume;
 
-          // Endpoint invariants.
-          expect(fromCurve[0]).toBeCloseTo(mv, 5); // cos(0)*mv = mv
-          expect(fromCurve[63]).toBeCloseTo(0, 5); // cos(pi/2)*mv ≈ 0
-          expect(toCurve[0]).toBeCloseTo(0, 5); // sin(0)*mv = 0
-          expect(toCurve[63]).toBeCloseTo(mv, 5); // sin(pi/2)*mv = mv
+          // Endpoint invariants — RELATIVE curves, independent of mv.
+          expect(fromCurve[0]).toBeCloseTo(1, 5); // cos(0) = 1
+          expect(fromCurve[63]).toBeCloseTo(0, 5); // cos(pi/2) ≈ 0
+          expect(toCurve[0]).toBeCloseTo(0, 5); // sin(0) = 0
+          expect(toCurve[63]).toBeCloseTo(1, 5); // sin(pi/2) = 1
 
-          // Constant-power invariant: (fromCurve[i]/mv)^2 + (toCurve[i]/mv)^2 ≈ 1
-          // Only check when mv is meaningfully non-zero.
-          if (mv > 1e-6) {
-            for (let i = 0; i < 64; i++) {
-              const f = fromCurve[i]! / mv;
-              const t = toCurve[i]! / mv;
-              expect(f * f + t * t).toBeCloseTo(1, 2); // within 1e-2 (Float32 precision)
-            }
+          // Constant-power invariant holds directly on the relative curves:
+          // fromCurve[i]^2 + toCurve[i]^2 ≈ 1 at every sample, for all mv.
+          for (let i = 0; i < 64; i++) {
+            const f = fromCurve[i]!;
+            const t = toCurve[i]!;
+            expect(f * f + t * t).toBeCloseTo(1, 2); // within 1e-2 (Float32 precision)
           }
+
+          // The master is applied exactly once via Howler's global gain.
+          expect(Howler.volume).toHaveBeenCalledWith(mv);
 
           audio.dispose();
         },

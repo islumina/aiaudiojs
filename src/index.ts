@@ -392,7 +392,12 @@ class SoundImpl implements Sound {
     this.ck();
     const looping = opts?.loop ?? false;
     const id = this.howl.play();
-    this.howl.volume(opts?.volume ?? this.state.masterVolume, id);
+    // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
+    // once via Howler's global gain (`Howler.volume`). Defaulting this to the
+    // masterVolume would double-attenuate (Howler global × per-id default →
+    // mv²) and make voices started before vs after a master change diverge in
+    // loudness (AUD-B-02). Default is therefore 1, not masterVolume.
+    this.howl.volume(opts?.volume ?? 1, id);
     this.howl.rate(opts?.rate ?? 1, id);
     this.howl.loop(looping, id);
     const signal = opts?.signal;
@@ -673,19 +678,19 @@ export function createAudio(opts?: AudioOptions): Audio {
       throw err;
     }
 
-    const mv = state.masterVolume;
     const now = ctx.currentTime;
     const { sin, cos } = ensureCurves();
     const dur = cfOpts.duration;
-    const cosScaled = cos.map((v) => v * mv);
-    const sinScaled = sin.map((v) => v * mv);
-    // Outgoing: mv -> 0 along cos. Incoming: 0 -> mv along sin. sin^2+cos^2=1
-    // keeps perceived loudness flat. Terminal state mirrors the linear path
-    // (from at 0, to at mv) and is written to each sound's `_volume`.
+    // Per-sound gain is a RELATIVE [0,1] value; the master is applied exactly
+    // once via Howler's global gain (AUD-B-02). The sin/cos curves are NOT
+    // scaled by masterVolume — doing so here, on top of the global master,
+    // would attenuate the crossfade to mv². Outgoing: 1 -> 0 along cos.
+    // Incoming: 0 -> 1 along sin. sin^2 + cos^2 = 1 keeps perceived loudness
+    // flat. Terminal `_volume` is the relative value (from at 0, to at 1).
     // `touched` holds the sound objects so the abort branch can sync `_volume`.
     const touched = [...fromSounds, ...toSounds];
-    for (const s of fromSounds) rampSound(s, cosScaled, 0, now, dur);
-    for (const s of toSounds) rampSound(s, sinScaled, mv, now, dur);
+    for (const s of fromSounds) rampSound(s, cos, 0, now, dur);
+    for (const s of toSounds) rampSound(s, sin, 1, now, dur);
     const durationMs = dur * 1000;
     return new Promise<void>((resolve) => {
       let done = false;
@@ -751,8 +756,13 @@ export function createAudio(opts?: AudioOptions): Audio {
     }
 
     to.play({ volume: 0 });
-    from.nativeHowl.fade(state.masterVolume, 0, durationMs);
-    to.nativeHowl.fade(0, state.masterVolume, durationMs);
+    // Per-sound fade endpoints are RELATIVE [0,1] values; the master is
+    // applied exactly once via Howler's global gain (AUD-B-02). Fading to/from
+    // state.masterVolume here would double-attenuate (Howler global × per-id)
+    // and make the crossfade loudness diverge when the master is not 1.
+    // Outgoing: 1 -> 0. Incoming: 0 -> 1.
+    from.nativeHowl.fade(1, 0, durationMs);
+    to.nativeHowl.fade(0, 1, durationMs);
     return new Promise<void>((resolve) => {
       const signal = cfOpts.signal;
       let onAbort: (() => void) | undefined;
