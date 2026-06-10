@@ -10,7 +10,7 @@
 
 隸屬 [ai\*js micro-runtime 生態系](https://github.com/islumina) ─ 另見 [aifsmjs](https://github.com/islumina/aifsmjs)（FSM）、[aiecsjs](https://github.com/islumina/aiecsjs)（ECS）、[aibridgejs](https://github.com/islumina/aibridgejs)（cross-context RPC）、[aipooljs](https://github.com/islumina/aipooljs)（物件池）、[aiquadtreejs](https://github.com/islumina/aiquadtreejs)（空間分割）、[aieventjs](https://github.com/islumina/aieventjs)（event emitter）。
 
-> **狀態：0.5.3。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。0.5.3 是文件修補：新增醒目的 audio-unlock callout，以及一個 app 端「在 asset 還不存在時就先出聲」的 recipe。詳見 CHANGELOG。
+> **狀態：0.5.6。** 完整實作上線。`createAudio` / `load` / `play` / `pause` / `stop` / `resume` / `fade` / `crossfade` / `dispose` 全部接通。Crossfade 預設使用 linear（向下相容）；透過 `{ curve: 'equal-power' }` 切換 equal-power 模式。發版歷史見 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 

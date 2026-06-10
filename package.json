@@ -49,13 +49,14 @@
     "test:watch": "vitest",
     "lint": "biome check src test",
     "format": "biome format --write src test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
     "verify:exports": "node scripts/verify-exports.mjs",
+    "verify:docs": "node scripts/verify-docs.mjs",
     "check:size": "node scripts/check-size.mjs",
     "build:llms": "node scripts/build-llms-full.mjs",
     "verify:llms": "node scripts/build-llms-full.mjs --check",
     "coverage": "vitest run --coverage",
-    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm coverage && pnpm build && pnpm verify:exports && pnpm verify:llms && pnpm check:size"
+    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm verify:docs && pnpm coverage && pnpm build && pnpm verify:exports && pnpm verify:llms && pnpm check:size"
   },
   "peerDependencies": {
     "howler": "^2.2.4"

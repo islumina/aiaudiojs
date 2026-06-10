@@ -23,7 +23,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/islumina) — see also [aifsmjs](https://github.com/islumina/aifsmjs) (FSM), [aiecsjs](https://github.com/islumina/aiecsjs) (ECS), [aibridgejs](https://github.com/islumina/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/islumina/aipooljs) (object pool), [aiquadtreejs](https://github.com/islumina/aiquadtreejs) (spatial), and [aieventjs](https://github.com/islumina/aieventjs) (event emitter).
 
-> **Status: 0.5.3.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. 0.5.3 is a docs patch: a prominent audio-unlock callout and an app-side "ship audio before your assets exist" recipe. See CHANGELOG for details.
+> **Status: 0.5.6.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `resume` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
@@ -516,6 +516,45 @@ No runtime / source / API changes from 0.1.0. **0.1.1 is also the first version 
   ai\*js conventions Howler doesn't (`dispose()` idempotency, AbortSignal,
   first-class `crossfade()`, named errors) while keeping the proven
   Howler runtime underneath.
+
+---
+
+<!-- ===== STABILITY.md ===== -->
+
+# Stability
+
+This document describes the stability guarantees for each feature in `aiaudiojs`.
+Stability levels follow the [Node.js stability index](https://nodejs.org/api/documentation.html#stability-index) convention
+adapted for a micro-runtime library:
+
+- **stable** — the API is production-ready. Breaking changes require a major version bump.
+- **experimental** — the API is usable but may change in a minor version. Feedback welcome.
+
+---
+
+## Feature stability table
+
+| Feature | Stability | Notes |
+| ------- | --------- | ----- |
+| `crossfade(curve: 'linear')` | stable | Shipped in 0.1.0. Default behaviour; backward-compatible. Delegates to `Howl.fade()`. Frozen on the 1.0 track (declared 0.4.0). |
+| `crossfade(curve: 'equal-power')` | stable | Shipped in 0.3.0. Requires Howler in Web Audio mode (`_sounds[i]._node` defined). HTML5 fallback mode throws `AudioError`; callers may downgrade to `'linear'`. Frozen on the 1.0 track (declared 0.4.0). |
+| Spatial audio (PannerNode / HRTF) | experimental | Planned for v0.7 — roguelite room-direction audio. Not implemented in this cycle. API surface not yet defined. |
+
+---
+
+## 1.0-track freeze (declared 0.4.0)
+
+The 0.3.x public surface — the `createAudio` factory; `load`, `play` / `pause` / `stop` /
+`fade`, both `crossfade` curves, `dispose` / `disposeAll`, `nativeHowl`; the `AudioError` /
+`AudioDisposedError` classes; and the exported type / interface shapes (`AudioOptions`,
+`PlayOptions`, `CrossfadeCurve`, `CrossfadeOptions`, `Sound`, `Audio`) — is **frozen on
+the 1.0 track**. It will not change shape (no
+signature, error-name, or default-behaviour changes) before 1.0, and once 1.0 ships it
+is frozen for the entire 1.x line. The 0.4.0 dependency-reduction release adds no runtime
+API; it only confirms this freeze and the family dependency hygiene.
+
+`howler` remains a required `peerDependency` — see the 0.4.0 CHANGELOG and the README
+["Why aiaudiojs"](README.md#why-aiaudiojs) section for the dependency decision.
 
 ---
 
