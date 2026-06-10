@@ -356,6 +356,11 @@ interface State {
 const noop = (): void => {};
 
 function clamp(v: number): number {
+  // Guard NaN first: Math.min/max(NaN) is NaN, which would poison
+  // state.masterVolume and propagate to Howler.volume (AUD-S-02). NaN
+  // normalises to 0 (silent) — the safe floor. ±Infinity is left to the
+  // min/max below, which correctly clamps it to the [0,1] ceiling/floor.
+  if (Number.isNaN(v)) return 0;
   return Math.min(1, Math.max(0, v));
 }
 
@@ -744,8 +749,14 @@ export function createAudio(opts?: AudioOptions): Audio {
       throw new AudioError("cannot crossfade a disposed Sound");
     }
     const durationMs = cfOpts.duration * 1000;
-    if (cfOpts.duration <= 0) {
-      return Promise.reject(new AudioError("crossfade duration must be > 0"));
+    // Reject non-finite durations as well as <= 0. NaN <= 0 is false, so the
+    // old guard let NaN through to setTimeout(resolve, NaN) (fires instantly,
+    // broken fade) and to setValueCurveAtTime (raw RangeError) after to.play()
+    // already started a silent voice; +Infinity would hang the resolve timer
+    // forever (AUD-S-02). This guard runs before the equal-power branch and
+    // before any to.play(), so no orphan voice is possible.
+    if (!Number.isFinite(cfOpts.duration) || cfOpts.duration <= 0) {
+      return Promise.reject(new AudioError("crossfade duration must be a finite number > 0"));
     }
     if (cfOpts.signal?.aborted === true) {
       return Promise.reject(new DOMException("Crossfade aborted", "AbortError"));

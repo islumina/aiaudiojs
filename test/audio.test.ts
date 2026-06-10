@@ -1035,3 +1035,66 @@ describe("K. master volume applied once (AUD-B-02)", () => {
     audio.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// L. AUD-S-02 — non-finite numeric inputs must not bypass the guards
+//
+// clamp() documented as "[0,1]" let NaN through (min/max(NaN) === NaN),
+// poisoning state.masterVolume; the crossfade duration guard `<= 0` let NaN
+// pass (NaN <= 0 is false), reaching setValueAtTime/setValueCurveAtTime which
+// throw a raw RangeError AFTER `to.play()` already started a silent voice.
+// ---------------------------------------------------------------------------
+
+describe("L. non-finite inputs (AUD-S-02)", () => {
+  it("L1. createAudio({ volume: NaN }) — masterVolume normalises to a finite value, not NaN", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: Number.NaN });
+    expect(Number.isFinite(audio.volume)).toBe(true);
+    expect(audio.volume).toBe(0);
+    audio.dispose();
+  });
+
+  it("L2. audio.volume = NaN / Infinity — setter rejects non-finite, stays in [0,1]", async () => {
+    const audio = createAudio({ autoUnlock: false, volume: 0.5 });
+    audio.volume = Number.NaN;
+    expect(Number.isFinite(audio.volume)).toBe(true);
+    expect(audio.volume).toBe(0);
+    audio.volume = Number.POSITIVE_INFINITY;
+    expect(audio.volume).toBe(1); // +Inf clamps to the [0,1] ceiling
+    audio.volume = Number.NEGATIVE_INFINITY;
+    expect(audio.volume).toBe(0); // -Inf clamps to the [0,1] floor
+    audio.dispose();
+  });
+
+  it("L3. crossfade({ duration: NaN }) rejects with AudioError (not a raw throw)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    await expect(audio.crossfade(from, to, { duration: Number.NaN })).rejects.toBeInstanceOf(
+      AudioError,
+    );
+    audio.dispose();
+  });
+
+  it("L4. equal-power crossfade({ duration: NaN }) rejects with AudioError before any voice is orphaned", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    from.play();
+    const err = await audio
+      .crossfade(from, to, { duration: Number.NaN, curve: "equal-power" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AudioError);
+    expect(err).not.toBeInstanceOf(RangeError);
+    audio.dispose();
+  });
+
+  it("L5. crossfade({ duration: Infinity }) rejects with AudioError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const from = await audio.load("a.mp3");
+    const to = await audio.load("b.mp3");
+    await expect(
+      audio.crossfade(from, to, { duration: Number.POSITIVE_INFINITY }),
+    ).rejects.toBeInstanceOf(AudioError);
+    audio.dispose();
+  });
+});
