@@ -2,7 +2,7 @@
 
 以 Howler.js 為底層的薄 Web Audio 包裝，補上 ai*js 家族慣例：`dispose()` 可重複呼叫、`AbortSignal`、明確的 `unlock()`，以及 `crossfade()`。
 
-> **狀態：0.5.7 - 穩定 1.0 軌道 API。** Howler 維持 peer dependency；此套件只提供 root entry。
+> **狀態：0.5.8 - 穩定 1.0 軌道 API。** Howler 維持 peer dependency；此套件只提供 root entry。
 
 ## 安裝
 

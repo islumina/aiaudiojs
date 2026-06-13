@@ -4,8 +4,10 @@ All notable changes to aiaudiojs are summarized here. Older entries are intentio
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-06-14
+
+- Fixed: a late Howler `load` / `loaderror` firing after an aborted `load()` no longer adds an orphaned `Sound` to the managed set. `load()` now sets a settled guard and detaches both lifecycle listeners on the first of load/error/abort, so a post-abort event is a no-op.
 - Documentation-only slimming pass: README, stability notes, review backlog, and LLM context were condensed without runtime/API changes.
-- Known follow-up: consider guarding the late Howler `load` event after an aborted `load()`.
 
 ## [0.5.7] - 2026-06-10
 

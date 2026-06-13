@@ -2,7 +2,7 @@
 
 Thin Web Audio shell over Howler.js with ai*js lifecycle conventions: idempotent `dispose()`, `AbortSignal` support, explicit `unlock()`, and first-class `crossfade()`.
 
-> **Status: 0.5.7 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
+> **Status: 0.5.8 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
 
 ## Install
 

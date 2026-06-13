@@ -15,7 +15,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Thin Web Audio shell over Howler.js with ai*js lifecycle conventions: idempotent `dispose()`, `AbortSignal` support, explicit `unlock()`, and first-class `crossfade()`.
 
-> **Status: 0.5.7 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
+> **Status: 0.5.8 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
 
 ## Install
 
@@ -84,8 +84,10 @@ All notable changes to aiaudiojs are summarized here. Older entries are intentio
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-06-14
+
+- Fixed: a late Howler `load` / `loaderror` firing after an aborted `load()` no longer adds an orphaned `Sound` to the managed set. `load()` now sets a settled guard and detaches both lifecycle listeners on the first of load/error/abort, so a post-abort event is a no-op.
 - Documentation-only slimming pass: README, stability notes, review backlog, and LLM context were condensed without runtime/API changes.
-- Known follow-up: consider guarding the late Howler `load` event after an aborted `load()`.
 
 ## [0.5.7] - 2026-06-10
 
