@@ -1,131 +1,28 @@
-# Code Review: aiaudiojs
+# aiaudiojs Review
 
-## 1. Metadata
+Current review state after the 2026-06-10 ai*js pass. Historical fixed items were summarized to keep the repo lightweight.
 
-| Field        | Value                                      |
-|--------------|--------------------------------------------|
-| Repo         | aiaudiojs                                  |
-| Version      | 0.5.1                                      |
-| Branch       | claude/adoring-ptolemy-OGonc               |
-| Head SHA     | ab7408cd2b12b8fcf7c8b42ac41c5cd087b4d47f   |
-| Review date  | 2026-06-03                                 |
-| Reviewer     | sonnet                                     |
+## Current Known Issues / Backlog
 
-## 2. Verdict / Summary
+| Priority | Area | Status | Notes |
+| --- | --- | --- | --- |
+| P2 | `load()` abort race | Open | If Howler emits `load` after an abort rejection, a `Sound` can briefly enter the managed set. Documented; next code pass should add a settled guard and detach listeners. |
+| P3 | Multi-instance master volume | Documented | `Howler.volume()` is global, so multiple `Audio` controllers can overwrite master volume. Prefer one controller per app/scene. |
+| P3 | Unlock event docs | Fixed in docs | README now lists the actual auto listeners: `touchstart`, `mousedown`, `keydown`. |
+| P3 | `PlayOptions.volume` docs | Fixed in docs | Per-play volume defaults to `1`; controller master volume is applied by Howler globally. |
 
-**Overall: PASS with minor findings.** The implementation is well-structured, follows ai\*js conventions throughout, and all baseline gates are green before and after fixes. The equal-power crossfade math is correct (sin² + cos² = 1 proven by the property test). AbortSignal plumbing is thorough across load/play/crossfade. dispose() idempotency is correct at both the Audio and Sound levels.
+## Fixed Summary
 
-Four safe doc/string fixes were applied (stale `getNativeHowl()` function-call references → `sound.nativeHowl`, stale `linearRampToValueAtTime` → `setValueCurveAtTime`, and two status-line version drifts in README/README_ZHTW). No behavior changes in any fix.
+- Dispose and `disposeAll()` are idempotent and unload managed Howls.
+- `resume()` filters ended voices and returns `-1` when nothing resumes.
+- Equal-power crossfade applies master volume exactly once and aborts Web Audio schedules cleanly.
+- HTML5 fallback and unexpected Howler internals throw named `AudioError` rather than orphaning started voices.
 
-Five findings-only issues were identified: three low-severity code-quality items and two medium-severity documentation/coverage gaps. None are blocking.
+## Verification Baseline
 
-## 3. Gate Results
-
-### Baseline (pre-fix)
-
-| Gate            | Result | Notes                                        |
-|-----------------|--------|----------------------------------------------|
-| typecheck       | PASS   | No errors                                    |
-| lint            | PASS   | 0 issues in 4 files                          |
-| build           | PASS   | ESM + CJS + .d.ts produced                  |
-| verify:exports  | PASS   | 1 subpath resolved                           |
-| verify:llms     | PASS   | llms-full.txt up-to-date at 27.1 KB          |
-| check:size      | PASS   | 2077 B / 2100 B gzip (99% of budget)        |
-| coverage        | PASS   | Stmts 98.7%, Branch 94.33%, Funcs 100%, Lines 100% |
-
-### After fixes (doc/string changes only; no src/ changes)
-
-| Gate            | Result | Notes                                        |
-|-----------------|--------|----------------------------------------------|
-| typecheck       | PASS   | unchanged                                    |
-| lint            | PASS   | unchanged                                    |
-| build           | PASS   | unchanged                                    |
-| verify:exports  | PASS   | unchanged                                    |
-| verify:llms     | PASS   | llms-full.txt regenerated after CONTRIBUTING/README edits |
-| check:size      | PASS   | 2077 B / 2100 B (src unchanged)              |
-| coverage        | PASS   | 62 tests, thresholds 98.7/94.33/100/100     |
-
-## 4. Safe Fixes Applied
-
-| # | File | Kind | Description |
-|---|------|------|-------------|
-| 1 | `CONTRIBUTING.md` | doc typo / stale ref | Replaced `linearRampToValueAtTime` with `setValueCurveAtTime` (equal-power) and `Howl.fade()` (linear) — the actual implementation uses these, not `linearRampToValueAtTime`. |
-| 2 | `CONTRIBUTING.md` | doc typo / stale ref | Replaced `getNativeHowl()` (function-call form) with `sound.nativeHowl` (readonly property) — matches the exported API. |
-| 3 | `llms.txt` | doc typo / stale ref | Replaced `getNativeHowl()` with `sound.nativeHowl` in the package description line. |
-| 4 | `README.md` | version drift | Updated status line from `0.4.0` to `0.5.1`; replaced stale 0.4.0 description with accurate 0.5.1 release summary referencing the listener-leak fix. |
-| 5 | `README_ZHTW.md` | version drift | Updated status line from `0.4.0` to `0.5.1` with matching Traditional Chinese text. |
-| 6 | `llms-full.txt` | regenerated | Re-generated by `pnpm build:llms` after CONTRIBUTING.md and README.md edits (per build-llms-full.mjs — concatenates README + CHANGELOG + CONTRIBUTING). |
-
-## 5. Findings by Severity
-
-### Medium
-
-**M1 — Linear crossfade abort does not call cleanupAbort() on the abort path**
-- File: `src/index.ts:706-714`
-- Area: AbortSignal plumbing
-- Description: In the linear `crossfade()` path, the `onAbort` handler clears the timer and calls `resolve()` but does not call `cleanupAbort()`. Since `{ once: true }` is used, the event listener auto-removes itself from the target — so there is no listener leak on the `AbortSignal`. However, `cleanupAbort` still holds a reference to the (now detached) `onAbort` closure via the `if (signal !== undefined && onAbort !== undefined)` guard. This closure is GC'd when the promise settles, so the practical impact is zero. The inconsistency exists because the equal-power and load abort paths DO call `cleanupAbort()` on abort — only the linear crossfade path is inconsistent. Could cause confusion during future maintenance.
-- Recommendation: Add `cleanupAbort()` call inside `onAbort` (after `clearTimeout`) for consistency with the equal-power abort path. FINDINGS-ONLY per rules (observable-behavior-adjacent abort semantics change would need a test update).
-
-**M2 — Branch coverage gap on lines 380, 521, 628, 638–645, 707**
-- File: `src/index.ts` (v8 uncovered: 380, 521, 628, 638-645, 707)
-- Area: AbortSignal / crossfade abort
-- Description: Lines 380 (`onAbort = undefined` inside cleanup), 521 (no-ctx path in unlock), 628 (equal-power `abortedMidway=false` full path), 638–645 (abort freeze-gain branch including the `g === undefined` guard), 707 (linear abort's `timer !== undefined` guard in the else branch) are uncovered. The branch at 638–645 is the mid-fade abort gain-freeze for sounds whose `_node?.gain` is undefined during abort — defensive code that can only be hit by a race condition. The uncovered 94.33% branch score meets the 90% threshold but the frozen-gain null guard (638–645) has zero test coverage.
-- Recommendation: Add a test for equal-power abort where a sound's `_node.gain` is undefined at abort time (simulating a mid-flight context teardown). FINDINGS-ONLY (test-only change, but requires reproducing the defensive branch).
-
-### Low
-
-**L1 — `{ once: false }` explicit option on autoUnlock document.addEventListener is redundant**
-- File: `src/index.ts:502`
-- Area: iOS unlock / lifecycle
-- Description: `document.addEventListener(ev, handler, { once: false })` — `once: false` is the default and the explicit option adds noise. The handler already manually removes all three listeners on first fire. Not a bug.
-- Recommendation: Remove `{ once: false }` option object, or replace with `{ passive: true }` for unlock events (minor performance hint to browser). FINDINGS-ONLY (behavior-adjacent since `passive` would be a change to the event options).
-
-**L2 — `durationMs` computed before the `duration <= 0` guard**
-- File: `src/index.ts:676-678`
-- Area: crossfade
-- Description: In `crossfade()`, `const durationMs = cfOpts.duration * 1000` is computed at line 676 and the guard `if (cfOpts.duration <= 0)` is at line 677. If `duration` is 0 or negative, `durationMs` is computed (harmlessly) before the early-return. This is purely cosmetic — `durationMs` is not used for any side effect before the guard. Moving the guard above the variable computation would be cleaner but is a style-only change.
-- Recommendation: Move the `duration <= 0` guard to be the first check (after `from.disposed || to.disposed`) and compute `durationMs` after. FINDINGS-ONLY (behavior-preserving refactor, but per rules we only safe-fix obvious comment/string typos in non-src files for source changes).
-
-**L3 — Module-scope `sinCurve`/`cosCurve` singletons are never reset between tests across files**
-- File: `src/index.ts:269-285`, test isolation
-- Area: equal-power crossfade / test architecture
-- Description: The `sinCurve` and `cosCurve` module-scope `Float32Array` singletons are built lazily on first equal-power call and never reset. Because Vitest runs each test file in its own module scope (isolated by file), this is not an inter-test contamination issue in practice. Within a single test file the singletons persist across test cases, which is intentional and correct (they are pure functions of N and Math constants). This is a finding-only note, not a bug.
-- Recommendation: No action required. Document as intentional in a comment if there is concern about future per-file-reset logic.
-
-## 6. Findings-Only Backlog
-
-| Severity | Area | Title | File:Line | Recommendation |
-|----------|------|-------|-----------|----------------|
-| M | AbortSignal plumbing | Linear crossfade onAbort missing cleanupAbort() call | src/index.ts:706-714 | Add `cleanupAbort()` call inside `onAbort` for consistency |
-| M | Coverage | Equal-power abort branch for `_node?.gain === undefined` uncovered | src/index.ts:638-645 | Add test simulating mid-flight context teardown during equal-power abort |
-| L | iOS unlock | Explicit `{ once: false }` option is redundant on autoUnlock listeners | src/index.ts:502 | Remove the explicit option object |
-| L | crossfade | `durationMs` computed before `duration <= 0` guard | src/index.ts:676-677 | Reorder guard before variable computation |
-| L | Test arch | Module-scope curve singletons persist within a file's test run | src/index.ts:269-285 | No action; document as intentional |
-
-## 7. Appendix
-
-### Commands run (in order)
-
-```
-corepack enable
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm lint
-pnpm build
-pnpm verify:exports
-pnpm verify:llms
-pnpm check:size
-pnpm coverage
-# (review src/ and test/ manually)
-# (safe fixes applied to CONTRIBUTING.md, llms.txt, README.md, README_ZHTW.md)
-pnpm build:llms
-pnpm lint && pnpm typecheck && pnpm build && pnpm check:size && pnpm verify:llms && pnpm verify:exports
-pnpm coverage
-```
-
-### Versions
-
-| Tool   | Version   |
-|--------|-----------|
-| node   | v22.22.2  |
-| pnpm   | 9.12.3    |
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm verify:docs`
+- `pnpm verify:exports`
+- `pnpm verify:llms`
+- `pnpm check:size`

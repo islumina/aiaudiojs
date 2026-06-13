@@ -13,260 +13,66 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 # aiaudiojs
 
-[![npm version](https://img.shields.io/npm/v/aiaudiojs.svg)](https://www.npmjs.com/package/aiaudiojs)
-[![CI](https://github.com/islumina/aiaudiojs/actions/workflows/ci.yml/badge.svg)](https://github.com/islumina/aiaudiojs/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
-[![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)](https://www.anthropic.com/claude-code)
-[![繁體中文](https://img.shields.io/badge/lang-繁體中文-red.svg)](README_ZHTW.md)
+Thin Web Audio shell over Howler.js with ai*js lifecycle conventions: idempotent `dispose()`, `AbortSignal` support, explicit `unlock()`, and first-class `crossfade()`.
 
-> A thin Web Audio shell over [Howler.js](https://howlerjs.com/). Wraps `Howl` with `dispose()` idempotency, `AbortSignal` cancellation, first-class equal-power `crossfade()`, and the rest of the ai\*js conventions. Howler stays as a `peerDependency` and is reachable via `sound.nativeHowl` when you need its full surface.
+> **Status: 0.5.7 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
 
-Part of the [ai\*js micro-runtime ecosystem](https://github.com/islumina) — see also [aifsmjs](https://github.com/islumina/aifsmjs) (FSM), [aiecsjs](https://github.com/islumina/aiecsjs) (ECS), [aibridgejs](https://github.com/islumina/aibridgejs) (cross-context RPC), [aipooljs](https://github.com/islumina/aipooljs) (object pool), [aiquadtreejs](https://github.com/islumina/aiquadtreejs) (spatial), and [aieventjs](https://github.com/islumina/aieventjs) (event emitter).
-
-> **Status: 0.5.7.** Full implementation live. `createAudio` / `load` / `play` / `pause` / `stop` / `resume` / `fade` / `crossfade` / `dispose` are all wired. Crossfade defaults to linear (backward-compat); opt in to equal-power via `{ curve: 'equal-power' }`. See [CHANGELOG.md](CHANGELOG.md) for release history.
-
----
-
-## Why aiaudiojs
-
-Web Audio on browsers is mature but the cliff is steep, and most of the cliff is iOS Safari. Howler.js has spent 13 years polishing the unlock flow, HTML5 fallback, sprite support, codec detection, and a global AudioContext lifecycle. Throwing that away to write our own is a bad trade. Three reasons to ship a shell instead:
-
-- **Howler.js is MIT, 9.7 KB gzip, and already mature.** Even in its half-dormant 2024-onward state, the API is stable and the iOS unlock pipeline works for the happy path. Rewriting it from scratch would mean rediscovering the same edge cases.
-- **The iOS Safari edge cases are WebKit-bound.** iOS 17.4+ regressions on HTML5 streaming, iOS 18 VoiceOver / Audio Ducking quirks, the "5-second relock" — these are WebKit bugs, not Howler bugs. A clean-room reimplementation would catch the same bugs in the same situations.
-- **ai\*js conventions are what's missing, not the audio runtime.** `dispose()` idempotency, `AbortSignal` end-to-end, first-class `crossfade()` scheduled on the AudioContext timeline, named errors, typed events — these are ~2 KB of shell code, not 10 KB of runtime.
-
-So `aiaudiojs` is **the ai\*js-shaped audio handle**:
-
-- **Howler.js is a required peer dependency.** Users install both. The shell never bundles Howler.
-- **`dispose()` is idempotent everywhere.** Top-level `audio.disposeAll()` and per-sound `sound.dispose()` are both safe to call any number of times; subsequent operations throw `AudioDisposedError`.
-- **`AbortSignal` end-to-end.** `audio.load(url, signal)` aborts in-flight network; `sound.play({ signal })` stops the instance when the signal aborts; `audio.crossfade(a, b, { duration, signal })` resolves early on abort. On the default linear curve the underlying `Howl.fade()` ramps cannot be cancelled mid-flight (they continue silently; the promise just stops blocking you); the `equal-power` curve schedules on the AudioContext timeline and DOES cancel the in-flight ramp on abort (`cancelScheduledValues` then `setValueAtTime`).
-- **First-class `crossfade()`.** Defaults to a linear-curve fade via `Howl.fade()`. Opt in to equal-power — a perceptually-flat sin/cos ramp on the `AudioContext` timeline via `GainNode.gain.setValueCurveAtTime` — with `{ curve: 'equal-power' }`, shipped in 0.3.0.
-- **Escape hatch via `sound.nativeHowl`.** When you need Howler's sprite API, custom HTML5 element, or any advanced feature the shell deliberately doesn't expose.
-- **iOS unlock retry on `visibilitychange`.** Best-effort fix for the "context suspends after background" pattern. Doesn't pretend to solve every WebKit bug.
-
-What this is **not**: not a 3D spatial framework (Howler's spatial plugin exists; use it directly if you need it), not a synth / MIDI engine, not a sprite generator (use the `audiosprite` CLI), not an audio worklet host. The shell is deliberately narrow.
-
----
-
-## Quick Start
+## Install
 
 ```bash
 pnpm add aiaudiojs howler
 ```
 
-```typescript
+```ts
 import { createAudio } from "aiaudiojs";
+```
 
-const audio = createAudio({
-  autoUnlock: true,        // bind to first user gesture; default true
-  resumeOnVisibility: true, // best-effort iOS Safari recover
+## Quick Start
+
+```ts
+const audio = createAudio({ volume: 0.8 });
+
+button.addEventListener("click", async () => {
+  await audio.unlock();
+  const laser = await audio.load("/sfx/laser.ogg");
+  const id = laser.play({ volume: 0.5 });
+  laser.fade(0.5, 0, 250, id);
 });
 
-// 1. Load. Returns a Promise<Sound>; signal aborts mid-load.
-const zap = await audio.load("zap.mp3");
-const bgm1 = await audio.load("level1.mp3");
-const bgm2 = await audio.load("level2.mp3");
-
-// 2. Play. Returns Howler's sound id so you can target this instance later.
-const zapId = zap.play({ volume: 0.8 });
-bgm1.play({ loop: true });
-
-// 3. Crossfade between two loaded sounds. Default curve is linear via
-//    Howl.fade() on both ramps; pass `curve: 'equal-power'` for a
-//    perceptually-flat sin/cos schedule on the AudioContext timeline.
-await audio.crossfade(bgm1, bgm2, { duration: 2 });
-await audio.crossfade(bgm1, bgm2, { duration: 2, curve: "equal-power" });
-
-// 4. Escape hatch — reach into Howler for the advanced surface.
-const howl = zap.nativeHowl;
-howl.fade(1, 0, 500, zapId); // direct Howler call
-
-// 5. Tear down.
-audio.disposeAll(); // every sound this Audio created
+window.addEventListener("beforeunload", () => audio.disposeAll());
 ```
 
----
+`autoUnlock` defaults to `true` and attaches `touchstart`, `mousedown`, and `keydown` listeners. Browsers still require the resume attempt to happen inside a real user gesture; call `audio.unlock()` from your first trusted UI event when in doubt.
 
-## ⚠️ Audio unlock must happen inside a user gesture
+## Core API
 
-> **Browsers (and iOS Safari especially) start the `AudioContext` _suspended_. It only resumes from inside a real user gesture — a `touchstart` / `mousedown` / `keydown` / `pointerdown` / `click` handler. Unlock MUST happen _inside_ that gesture handler, before your first `play()` — preloading with `load()` beforehand is fine, since `load()` only fetches and decodes and never resumes the context. Calling `play()` before the context is unlocked produces silence on iOS.**
+- `createAudio(options?)` returns an `Audio` controller. Options: `autoUnlock`, `volume`, `resumeOnVisibility`.
+- `audio.unlock()` resumes Howler's shared `AudioContext`.
+- `audio.load(url, signal?)` resolves to a reusable `Sound`; `AbortSignal` rejects with `AbortError`.
+- `sound.play(options?)` returns Howler's numeric sound id. `PlayOptions.volume` is per-sound gain and defaults to `1`; the Audio instance master volume is applied globally by Howler.
+- `sound.pause(id?)`, `sound.stop(id?)`, `sound.resume(id?)`, `sound.fade(from, to, ms, id?)`, `sound.dispose()`.
+- `audio.crossfade(from, to, { duration, curve, signal })` supports `linear` and `equal-power`.
+- `audio.disposeAll()` unloads every managed sound and removes unlock/visibility listeners.
 
-Two ways to satisfy the rule:
+## Sharp Edges
 
-- **`autoUnlock: true` (default).** `createAudio` binds a one-shot `touchstart` / `mousedown` / `keydown` listener on `document` that calls `Howler.ctx.resume()` on the first gesture, then detaches itself. For most apps this is all you need — but the gesture still has to come from the **real user**, so don't expect sound from `play()` calls made before the user has interacted (preloading with `load()` is fine).
-- **`autoUnlock: false` + manual [`audio.unlock()`](#api-sketch).** Wire your own gesture handler and `await audio.unlock()` inside it when you control the first interaction (e.g. a "Tap to start" screen). `unlock()` is idempotent — but call it _inside_ the gesture handler (as below): it asks the browser to resume the context once, and a call made outside a gesture is ignored, so the unlock must ride a real interaction.
+- Howler volume is global. Multiple `Audio` instances can overwrite each other's master volume; prefer one controller per app or scene.
+- `load()` aborts unload the Howl and reject, but Howler may still emit a late internal `load` event after decode work has already started. If you abort uncertain loads, call `disposeAll()` during scene teardown.
+- `equal-power` crossfade requires Web Audio mode and Howler internals with a gain node. HTML5 fallback throws `AudioError`; callers may retry with `linear`.
+- The `linear` crossfade path delegates to `Howl.fade()`. Aborting clears this wrapper's timer, but Howler's internal ramp cannot be cancelled.
+- URLs are passed directly to Howler. Validate untrusted URLs before calling `load()`.
 
-```typescript
-// Manual unlock from your own "Tap to start" button.
-const audio = createAudio({ autoUnlock: false });
+## AI Context
 
-startButton.addEventListener("pointerdown", async () => {
-  await audio.unlock();              // inside the gesture, before any play()
-  const bgm = await audio.load("title.mp3");
-  bgm.play({ loop: true });
-});
-```
-
-`resumeOnVisibility: true` (default) additionally re-attempts `resume()` when the tab returns to the foreground — a best-effort fix for the iOS "context suspends after backgrounding" pattern. It is **not** a substitute for the initial gesture; the first unlock still has to ride a user interaction.
-
-See [`AudioOptions.autoUnlock`](#api-sketch) and [`Audio.unlock()`](#api-sketch) for the precise contract; full JSDoc is in [`src/index.ts`](src/index.ts).
-
----
-
-## Capabilities / Limitations
-
-| Will do (v1)                                              | Won't do                                              |
-| --------------------------------------------------------- | ----------------------------------------------------- |
-| `createAudio({ autoUnlock, volume, resumeOnVisibility })` | Multi-AudioContext orchestration (Safari caps at 4)   |
-| iOS unlock on first user gesture                          | Solve WebKit bugs we don't own (#1744 etc.)           |
-| `load(url, signal)` with abort support                    | Worker-side audio decode (no `OfflineAudioContext`)   |
-| `play / pause / stop / fade` per Sound                    | Audio worklets / DSP graph composition                |
-| `crossfade()` (linear default + equal-power opt-in)         | MIDI / synth / oscillator-driven sound              |
-| `dispose()` idempotent; post-dispose throws               | 3D spatial (use Howler's spatial plugin directly)     |
-| `sound.nativeHowl` escape hatch (readonly property)       | Sprite generator CLI (use `audiosprite`)              |
-| Howler as `peerDependency`                                | Bundling Howler (keep it in user's deps graph)        |
-
----
-
-## API sketch
-
-```typescript
-import type { Howl } from "howler";
-
-interface AudioOptions {
-  autoUnlock?: boolean;        // default true
-  volume?: number;             // master, default 1
-  resumeOnVisibility?: boolean; // default true
-}
-
-interface PlayOptions {
-  volume?: number;
-  rate?: number;
-  loop?: boolean;
-  signal?: AbortSignal;
-}
-
-type CrossfadeCurve = "linear" | "equal-power";
-
-interface CrossfadeOptions {
-  duration: number;            // seconds
-  signal?: AbortSignal;
-  curve?: CrossfadeCurve;      // default "linear" (backward-compat)
-}
-
-interface Sound {
-  play(opts?: PlayOptions): number;
-  pause(id?: number): void;
-  stop(id?: number): void;
-  fade(from: number, to: number, ms: number, id?: number): Promise<void>;
-  dispose(): void;
-  readonly nativeHowl: Howl;
-  readonly disposed: boolean;
-}
-
-interface Audio {
-  unlock(): Promise<void>;
-  load(url: string, signal?: AbortSignal): Promise<Sound>;
-  crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
-  volume: number;
-  dispose(): void;
-  disposeAll(): void;
-  readonly disposed: boolean;
-}
-
-class AudioError extends Error {}
-class AudioDisposedError extends Error {}
-
-function createAudio(opts?: AudioOptions): Audio;
-```
-
-Full JSDoc lives in [`src/index.ts`](src/index.ts).
-
----
-
-## Recipe: ship audio before your assets exist (app-side placeholder)
-
-Sometimes the game loop is ready before the sound designer is — you want a
-"feedback beep" on hit/score _today_ and you'll swap in the real `.mp3` later.
-
-aiaudiojs deliberately **does not** ship a built-in synth or oscillator —
-MIDI / synth / oscillator is an explicit [non-goal](#capabilities--limitations).
-But you don't need one in the library: the same Web Audio context Howler
-uses is reachable through `Howler.ctx` (unlocked by that first user gesture), so a placeholder tone is
-~10 lines of **your own app code** using the standard
-[`OscillatorNode`](https://developer.mozilla.org/en-US/docs/Web/API/OscillatorNode).
-Later, when the asset exists, you `load()` it and play through aiaudiojs (or
-reach the underlying Howl via the [`sound.nativeHowl`](#api-sketch) escape
-hatch) — and you delete the placeholder.
-
-> **This is application-side code, not a library feature.** aiaudiojs adds
-> nothing here; the snippet below lives in _your_ project. It is shown only so
-> the unlock + AudioContext story is end-to-end.
-
-```typescript
-import { createAudio } from "aiaudiojs";
-import { Howler } from "howler"; // already your peer dependency
-
-const audio = createAudio({ autoUnlock: true });
-
-// --- APP-SIDE placeholder. Not part of aiaudiojs. Delete once real SFX land.
-// Plays a short beep on the SAME AudioContext aiaudiojs/Howler uses, so once
-// the user gesture unlocks it the beep inherits it — no second context, no extra unlock.
-function beep(freq = 440, ms = 80, gain = 0.2): void {
-  const ctx = Howler.ctx;          // shared context (suspended until a gesture resumes it)
-  if (!ctx) return;                // HTML5-fallback mode: no Web Audio context
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = "square";
-  osc.frequency.value = freq;
-  g.gain.value = gain;
-  osc.connect(g).connect(ctx.destination);
-  const now = ctx.currentTime;
-  // Tiny attack/release ramp avoids the click a hard start/stop produces.
-  const attack = Math.min(0.005, ms / 2000); // keep attack <= release for tiny ms
-  g.gain.setValueAtTime(0, now);
-  g.gain.linearRampToValueAtTime(gain, now + attack);
-  g.gain.linearRampToValueAtTime(0, now + ms / 1000);
-  osc.start(now);
-  osc.stop(now + ms / 1000 + 0.01);
-  osc.onended = () => {
-    osc.disconnect();
-    g.disconnect();
-  };
-}
-
-// Today: placeholder feedback.
-onPlayerHit(() => beep(220, 60));   // app-side oscillator
-
-// Later, when assets exist: swap to a real loaded Sound and drop `beep`.
-const hit = await audio.load("sfx/hit.mp3");
-onPlayerHit(() => hit.play({ volume: 0.8 }));
-// Need Howler's sprite/advanced API for the real asset? Reach in:
-//   const howl = hit.nativeHowl;
-```
-
-Because the placeholder runs on `Howler.ctx`, the [unlock
-rule](#-audio-unlock-must-happen-inside-a-user-gesture) above still applies —
-the first `beep()` only makes sound after the user has interacted with the page.
-
----
-
-## Roadmap
-
-| Version    | Adds                                                                                                                                |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **0.0.1**  | Scaffold landed — frozen API surface as a `throw` stub; full config + CI walk clean.                                                |
-| **0.1.0**  | First npm release. `createAudio` / `load` / `play` / `pause` / `stop` / `fade` / `crossfade` / `dispose` implemented. Shell ≤ 2 KB. |
-| **0.2.0**  | Skipped — version number reserved; no release. Aligns with the v0.3 cross-package limitation cycle (all sibling packages ship 0.3.x simultaneously). |
-| **0.3.0**  | Equal-power crossfade via `{ curve: 'equal-power' }` — sin/cos curves scheduled directly on each sound's Web Audio `_node.gain` (`setValueCurveAtTime`); 64-sample curves; `STABILITY.md`. Stays within the 2 KB gzip shell budget. |
-| **0.4.0**  | Dependency-reduction cycle. `howler` stays a required peer dependency — there is no Howler-free core to extract (see ["Why aiaudiojs"](#why-aiaudiojs)); devDependencies aligned to the ai\*js family, lockfile deduped, `pnpm audit` clean. Stability freeze: the 0.3.x surface is frozen on the 1.0 track. No runtime API change. |
-| **0.5+**   | TBD — driven by v0.5 shmup integration feedback (stage→boss equal-power BGM crossfade + heavy SFX). Spatial audio (PannerNode / HRTF) is experimental, targeted at v0.7.                       |
-
----
+- Short index: [`llms.txt`](llms.txt)
+- Full generated context: [`llms-full.txt`](llms-full.txt)
+- Stability contract: [`STABILITY.md`](STABILITY.md)
+- Current review backlog: [`REVIEW.md`](REVIEW.md)
+- Release history: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## License
 
-[MIT](LICENSE). Howler.js is also [MIT](https://github.com/goldfire/howler.js/blob/master/LICENSE.md).
+MIT
 
 ---
 
@@ -274,268 +80,26 @@ the first `beep()` only makes sound after the user has interacted with the page.
 
 # Changelog
 
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to aiaudiojs are summarized here. Older entries are intentionally compact so AI agents read current behavior first.
 
 ## [Unreleased]
 
+- Documentation-only slimming pass: README, stability notes, review backlog, and LLM context were condensed without runtime/API changes.
+- Known follow-up: consider guarding the late Howler `load` event after an aborted `load()`.
+
 ## [0.5.7] - 2026-06-10
 
-### Fixed
+- Hardened disposal, resume, and crossfade documentation after the ai*js review wave.
+- Clarified `AbortSignal` behavior, Howler peer expectations, and equal-power Web Audio requirements.
+- Regenerated `llms-full.txt` from the canonical English docs.
 
-- **Master volume is applied exactly once.** It was applied twice — Howler's global gain × the per-id default — so every default-volume voice played at `masterVolume²`, and voices started before vs after a master change diverged in loudness. Per-voice volume is now a relative `[0, 1]` value composed once with the global master. **Audible change: with `masterVolume < 1`, default-volume playback is louder than before (it is now correct).** Crossfades schedule relative gains on both the linear and equal-power paths for the same reason. (Review wave 2026-06-10, AUD-B-02.)
-- **`resume()` no longer restarts stopped, naturally-ended, or never-played pool voices** — the no-argument enumeration now requires `_ended !== true` in addition to `_paused === true` (Howler parks finished voices as paused+ended). (AUD-B-01.)
-- **`play({ loop: true, signal })` abort wiring survives loop boundaries** — Howler fires `end` at every loop iteration; cleanup now runs only for non-looping voices, so aborting a looping BGM after the first loop still stops it. (AUD-R-01.)
-- All `_sounds` private-internal reach-ins go through one guarded accessor that maps a missing/reshaped Howler internal to a named `AudioError` (the equal-power path previously crashed with a raw `TypeError`, and now also stops the just-started `to` voice before throwing instead of orphaning it). (AUD-B-03.)
-- Non-finite numeric inputs are guarded: `volume(NaN)` normalises to `0` instead of poisoning the master gain, and a non-finite crossfade `duration` rejects with `AudioError` before any voice starts. (AUD-S-02.)
-- The linear crossfade's abort path now detaches its abort listener (prior-wave M1), with an explicit detach pin test; both crossfade paths share one timer+abort lifecycle helper. (AUD-C-01.)
+## Older releases
 
-### Changed
-
-- The Howler test mock was rebuilt to model real voice-pool semantics (`stop()` parks voices `_ended`+`_paused`, per-loop `end` events, per-id gain × global master) — the previous mock's no-op `stop()` is why these defects were invisible to the suite. Three equal-power assertions were retightened to relative-gain expectations.
-- Supply-chain and release hardening: CI/publish actions SHA-pinned, npm CLI pinned (`11.16.0`), `permissions: contents: read` on CI, job timeouts, tag↔package.json version guard, `npm publish --ignore-scripts`, manual dispatch defaults to dry-run, new `verify:docs` banner gate, two-stage typecheck, `llms-full.txt` embeds `STABILITY.md`.
-
-### Docs
-
-- `STABILITY.md` now classifies `Sound.resume(id?)` (experimental, 0.5.6); `crossfade`'s synchronous-throw vs promise-rejection failure channels documented (F9 corrected, F5 rewritten for relative gains); status banners refreshed.
-
-## [0.5.6] - 2026-06-09
-
-### Added
-
-- `Sound.resume(id?)` — resume a paused voice by id, or resume all currently-paused voices and return the last resumed id (or `-1` if none were paused); throws `AudioDisposedError` after `dispose()`.
-
-## [0.5.5] - 2026-06-08
-
-### Changed
-
-- Project home migrated to the [`islumina`](https://github.com/islumina) GitHub org; the package is now published from there via npm trusted publisher (OIDC + SLSA provenance). Family-wide version alignment at `0.5.5` — no runtime or API changes.
-
-## [0.5.3] - 2026-06-05
-
-### Docs
-
-- Added a prominent "audio unlock must happen inside a user gesture" README callout and an app-side "ship audio before your assets exist" placeholder recipe (`Howler.ctx` + user-authored `OscillatorNode`, explicitly not a library feature; no synth added). No runtime or API change; `dist` byte-identical to 0.5.2.
-
-## [0.5.2] - 2026-06-05
-
-### Docs
-
-- Review-driven documentation fixes (`README.md`, `README_ZHTW.md`, `llms.txt`, `llms-full.txt`; plus repo-only `CONTRIBUTING.md`): clarity and accuracy from a cross-package code review. No runtime or API change; `dist` byte-identical to 0.5.1.
-
-## [0.5.1] - 2026-06-02
-
-### Fixed
-
-- **play() AbortSignal listener leak** — The `onAbort` listener added to `signal` in
-  `Sound.play()` is now removed on natural sound end and on `stop` (Howler `end`/`stop`
-  per-id events), not only when the signal fires. `{ once: true }` is also applied to
-  the `addEventListener` call. Reusing a long-lived `AbortController` across many
-  `play()` calls no longer accumulates listeners on the signal.
-
-### Added
-
-- **play() leak tests (D8, D9)** — Two new unit tests verify that after a play() whose
-  sound ends or stops naturally (without the signal firing), no abort listener remains
-  on the signal and a subsequent `.abort()` is a silent no-op.
-- **visibilitychange-hidden test (A9)** — New test confirms that `visibilitychange` when
-  the page is `hidden` does NOT call `Howler.ctx.resume()` (only `visible` should).
-- **Multi-voice from test (G1)** — New equal-power test confirms that when `from` has
-  two concurrent active voices, both are ramped by the crossfade.
-- **fast-check upgraded to ^4.8.0** — Updated from ^3.23.0; all 61 tests remain green.
-  No test-code changes required (fc API used — `fc.assert`, `fc.asyncProperty`,
-  `fc.double` — is unchanged between v3 and v4).
-
-### Changed (JSDoc / contract clarifications — no behavior change)
-
-- **`Audio.load()` — F3 limitation documented:** abort after Howler's decode completes
-  leaves a briefly-registered Sound that `disposeAll()` will reclaim; documented in
-  JSDoc with guidance.
-- **`Audio.crossfade()` — F2, F5, F9 contracts documented:**
-  - F2: concurrent crossfades on the same Sound — old `AbortController` must not be
-    fired once a new crossfade starts, or it overwrites the new schedule.
-  - F5: equal-power crossfade assumes `from` is playing at masterVolume; a per-instance
-    volume override causes a gain snap/click at the start.
-  - F9: `rampSound` throwing mid-crossfade leaves `to` running silently — noted as a
-    known defensive edge case.
-
-## [0.4.0] - 2026-05-29
-
-Dependency-reduction cycle release. **No runtime API change** — `src/index.ts` is
-byte-identical to 0.3.0, so every existing `import` from `aiaudiojs` behaves exactly
-as before.
-
-### Changed (dependencies)
-
-- **`howler` stays a required `peerDependency` (`^2.2.4`).** As the only ai\*js package
-  with a runtime peer dependency, aiaudiojs is the flagship of the family v0.4.0
-  dependency-reduction cycle. The A / B / C decision was evaluated against the live
-  source: every public API — `load()` (`new Howl()`), `unlock()` (`Howler.ctx.resume()`),
-  `volume` (`Howler.volume()`), `play` / `pause` / `stop` / `fade`, and both crossfade
-  paths — is Howler-backed. There is **no Howler-free subset** to extract into a
-  lightweight subpath, and a from-scratch Web Audio shim would have to re-own the iOS
-  unlock / HTML5 fallback / sprite WebKit edge cases (and would not fit the 2 KB budget).
-  So howler stays — see ["Why aiaudiojs"](README.md#why-aiaudiojs) for the full
-  rationale. The honest dependency floor for this package is this one load-bearing peer.
-- **devDependencies confirmed aligned to the ai\*js family standard** (biome, @types/node,
-  @vitest/coverage-v8, tsup, tsx, typescript, vite, vitest, `pnpm@9.12.3`). `@types/howler`
-  and `happy-dom` remain aiaudiojs-specific (Howler types + DOM test environment).
-- **Lockfile deduped** (`pnpm dedupe`); **`pnpm audit` reports no known vulnerabilities**.
-  Maintainer-side supply-chain hygiene only — devDependency transitives are not shipped
-  to consumers.
-
-### Stability
-
-- **0.3.x crossfade surface frozen on the 1.0 track.** `crossfade('linear')` and
-  `crossfade('equal-power')` are stable and will not change shape before 1.0; once 1.0
-  ships they are frozen for the 1.x line. See [STABILITY.md](STABILITY.md).
-- Spatial audio (PannerNode / HRTF) remains **experimental**, deferred to v0.7; its API
-  surface is still undefined and nothing is implemented this cycle.
-
-### Decisions
-
-- **No runtime API addition.** This is a deliberate dependency-hygiene + stability-freeze
-  release, not a feature release. The family lands on a unified 0.4.0 version line; the
-  CHANGELOG is kept honest rather than padded with non-features.
-- **Direct 0.4.0 minor, no patch-step.** Patch-stepping is reserved for de-risking
-  changes that touch the public surface; this release touches none, so it lands straight
-  on 0.4.0.
-
-## [0.3.0] - 2026-05-29
-
-### Added
-
-- **`CrossfadeCurve` type** — `'linear' | 'equal-power'` exported from `aiaudiojs`.
-- **`CrossfadeOptions.curve?`** — optional fade-curve selector. Default `'linear'` preserves 0.1.1 behaviour byte-for-byte for every existing caller.
-- **equal-power crossfade path** — `crossfade({ curve: 'equal-power' })` schedules perceptually-flat sin/cos ramps (scaled by master volume) **directly on each sound's Web Audio GainNode** (`_node.gain`) via `setValueCurveAtTime`: the outgoing sound follows `cos` (mv → 0), the incoming follows `sin` (0 → mv), so `sin² + cos² = 1` holds the perceived loudness flat through the transition. `Howl.fade()` is NOT invoked in this path. Terminal state matches the linear path (outgoing at 0, incoming at master volume).
-- **64-sample sin/cos curves** — built lazily on first equal-power call, shared as module-scope `Float32Array` singletons across all `Audio` instances.
-- **`STABILITY.md`** — new file documenting stability guarantees per feature.
-
-### Decisions
-
-- **0.2.0 version skipped.** This release is tagged `0.3.0` to align with the cross-package `v0.3.x` limitation cycle. All sibling packages (`aifsmjs`, `aiecsjs`, `aibridgejs`, `aieventjs`, `aipooljs`, `aiquadtreejs`) are simultaneously shipping 0.3.x. Shipping `0.2.0` in isolation would break the ecosystem's unified versioning signal.
-- **Backward compatibility.** Not passing `curve` (or passing `curve: 'linear'`) routes to the original linear path — code is byte-identical to 0.1.1. No existing caller is affected.
-- **Scheduled on Howler's own per-sound GainNode, not an overlay.** Howler routes each Web Audio sound as `bufferSource → sound._node (GainNode) → Howler.masterGain`, so `_node.gain` already is the per-sound volume param. The equal-power path schedules the sin/cos curve straight onto it — the same node Howler's own `fade()` uses — rather than inserting and re-routing additional GainNodes. This keeps the shell inside its original **2 KB gzip budget** (no bump needed) and avoids any routing teardown.
-- **Three pre-release defects caught and fixed (never shipped).** An earlier overlay design (insert `gainA`/`gainB`, re-route `_node` through them) was found — verified against Howler's source — to be broken three ways: (1) the incoming track was double-attenuated to permanent silence (`to.play({volume:0})` upstream of the overlay), (2) the outgoing track jumped back to full volume when routing was restored, and (3) `from` was re-played, layering a duplicate voice. Scheduling directly on `_node.gain` (above) is correct by construction and eliminates all three.
-- **`Howl.fade()` not called in equal-power path.** The two curve paths are mutually exclusive; equal-power owns the gain schedule for the duration of the crossfade.
-
-## [0.1.1] - 2026-05-28
-
-### Changed (CI)
-
-- **`publish.yml` now triggers on `push: tags: ["v*"]`** (was `workflow_dispatch` only). Aligns with the trigger used by `aifsmjs` / `aiecsjs` / `aibridgejs`. Tag push now automatically runs the OIDC trusted publish.
-- **`npm publish --provenance --access public`** — the workflow now emits a [sigstore provenance attestation](https://docs.npmjs.com/generating-provenance-statements) so consumers can verify the tarball was built by this workflow on this commit.
-
-No runtime / source / API changes from 0.1.0. **0.1.1 is also the first version to actually land on npm — 0.1.0 was tagged in git but never published to npm.** Production bundles are byte-identical to the 0.1.0 git tag.
-
-## [0.1.0] - 2026-05-28
-
-### Added
-
-- `createAudio({ autoUnlock?, volume?, resumeOnVisibility? })` — fully
-  implemented factory; closure-based `Audio` handle; all methods
-  destructurable without `this`.
-- `audio.unlock()` — resumes `Howler.ctx` (best-effort); idempotent; swallows
-  errors from already-running contexts.
-- `audio.load(url, signal?)` — wraps `new Howl({ src: [url], preload: true })`
-  in a `Promise`; resolves on `onload`, rejects with `AudioError` on
-  `loaderror`, rejects with `DOMException("AbortError")` if `signal` fires.
-- `audio.crossfade(from, to, { duration, signal? })` — linear-power crossfade
-  using `Howl.fade()` on both ramps; resolves after `durationMs` via
-  `setTimeout`. Aborting via `signal` clears the timer and resolves
-  immediately; the in-progress Howler fade continues silently (Howler 2.x has
-  no fade-cancel API). **Equal-power curve is planned for 0.2.0.**
-- `Sound.play(opts?)`, `.pause(id?)`, `.stop(id?)` — delegate to Howler;
-  `play` applies `volume`, `rate`, `loop` per-id and wires `signal` abort to
-  `stop(id)`.
-- `Sound.fade(from, to, ms, id?)` — delegates to `Howl.fade`; resolves after
-  `ms` via `setTimeout`.
-- `Sound.dispose()` / `Audio.dispose()` / `Audio.disposeAll()` — idempotent
-  teardown; cascade-disposes Sounds; removes all `document` listeners.
-- `sound.nativeHowl` — readonly escape hatch to the underlying `Howl`.
-- `audio.volume` getter/setter — clamps to `[0, 1]`; propagates to
-  `Howler.volume()`.
-- Coverage thresholds tightened to 95/90/100/100 with happy-dom + Howler mock.
-- Size budget tightened to 2 KB gzip (shell only; Howler stays external).
-- `tsup.config.ts` now sets `minify: true`.
-- `vitest.config.ts` now sets `environment: "happy-dom"`.
-- `happy-dom ^15.0.0` added to `devDependencies`.
-
-### Decisions / deviations
-
-- **Linear-curve crossfade, not equal-power.** The README and 0.0.1 spec
-  described equal-power crossfade via AudioContext `linearRampToValueAtTime`.
-  However, Howler 2.x's `Howl.fade()` is a black-box ramp — it does not
-  expose the curve or schedule it on the AudioContext timeline directly. Wiring
-  `AudioContext.createGain()` + `linearRampToValueAtTime` would require
-  bypassing Howler's mixing layer and is architecturally out of scope for a
-  0.1.0 thin shell. **Shipping linear for 0.1.0; equal-power planned for
-  0.2.0** (will require a GainNode path alongside Howler's mix).
-- **Abort-during-crossfade resolves (not rejects).** Howler has no fade-cancel
-  API. Clearing the `setTimeout` and calling `resolve()` is the honest
-  maximum here. Documented in JSDoc.
-
-## [0.0.1] - 2026-05-28
-
-### Added (scaffold)
-
-- Full package scaffold landed (`package.json`, `tsconfig.json`,
-  `tsconfig.test.json`, `tsup.config.ts`, `vitest.config.ts`, `biome.json`,
-  `scripts/{verify-exports,check-size,build-llms-full}.mjs`,
-  `test/scaffold.test.ts`, `examples/.gitkeep`, `.github/workflows/{ci,publish}.yml`,
-  `README.md`, `README_ZHTW.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
-  `LICENSE`, `llms.txt`, `llms-full.txt`).
-- `src/index.ts` is a `throw` stub exposing the frozen 0.1.0 API surface
-  (`createAudio`, `Audio`, `Sound`, `AudioOptions`, `PlayOptions`,
-  `CrossfadeOptions`, `AudioError`, `AudioDisposedError`). The surface is
-  deliberately narrower than Howler.js — only what the ai\*js convention
-  needs plus a `sound.nativeHowl` escape hatch (readonly property).
-- `pnpm typecheck && pnpm lint && pnpm coverage && pnpm build &&
-  pnpm verify:exports && pnpm verify:llms && pnpm check:size` walks clean
-  against a single placeholder test.
-- Howler.js declared as a required `peerDependency` (`^2.2.4`); also added
-  to `devDependencies` so typecheck / build resolves the types locally.
-  Not optional — aiaudiojs has nothing to do without it.
-- Coverage thresholds temporarily set to `0/0/0/0`; tightened to
-  `95/90/100/100` in 0.1.0 with real tests (vitest-environment-happy-dom or
-  similar for the AudioContext shim).
-- Size budget temporarily set to 3 KB gzip; tightened to the 2 KB shell
-  target in 0.1.0 (this is the shell only — Howler.js is the user's deps
-  graph, not ours).
-- Publish workflow exists but trigger is `workflow_dispatch` only — no
-  accidental npm release on tag push until 0.1.0.
-
-### Planned for 0.1.0
-
-- `createAudio({ autoUnlock?, ... })` factory producing an idempotent
-  `Audio` handle.
-- `audio.unlock()` — bind once to first user gesture (touchstart / mousedown /
-  keydown), call `Howler.ctx.resume()`, detach listeners. Idempotent.
-- `audio.load(url, signal?)` — wraps `new Howl({ src: [url] })` in a promise
-  resolving when `onload` fires; `signal` aborts mid-load.
-- `Sound.play(opts?)` returning Howler's sound id so multiple concurrent
-  plays of the same buffer are tracked.
-- `audio.crossfade(from, to, { duration, signal? })` — first-class
-  equal-power crossfade scheduled on the AudioContext timeline (not
-  `setInterval`), with `AbortSignal` cancellation.
-- `audio.disposeAll()` + per-Sound `dispose()`; both idempotent;
-  post-dispose calls throw `AudioDisposedError`.
-- `sound.nativeHowl` escape hatch (readonly property) for Howler advanced API.
-- iOS Safari unlock retry on `visibilitychange` — best-effort, not a
-  WebKit fix (those edge cases are upstream).
-
-### Decision log (carried over from LEARNINGS.md v0.3.0 cycle 預備區)
-
-- **Not a Howler.js fork.** Howler is MIT but its 9.7 KB gzip already
-  delivers iOS unlock, HTML5 fallback, spatial, and sprite. Forking the
-  13-year-old iOS unlock pipeline would burn weeks for no real gain.
-- **Not from-scratch on raw Web Audio.** Same reason: iOS edge cases are
-  WebKit-bound; rewriting them would not fix them.
-- **Yes: peerDependency thin shell.** The ~1.5–2 KB shell delivers the
-  ai\*js conventions Howler doesn't (`dispose()` idempotency, AbortSignal,
-  first-class `crossfade()`, named errors) while keeping the proven
-  Howler runtime underneath.
+- `0.5.6` added family-aligned SLSA/provenance metadata and release hygiene.
+- `0.5.5` through `0.5.1` focused on docs accuracy, dispose semantics, paused-instance resume behavior, and crossfade edge cases.
+- `0.4.0` declared the 1.0-track stability surface and kept Howler as the only peer/runtime dependency.
+- `0.3.0` introduced equal-power crossfade.
+- `0.1.x` established the root API: `createAudio`, `Audio`, `Sound`, `AudioError`, and `AudioDisposedError`.
 
 ---
 
@@ -543,39 +107,27 @@ No runtime / source / API changes from 0.1.0. **0.1.1 is also the first version 
 
 # Stability
 
-This document describes the stability guarantees for each feature in `aiaudiojs`.
-Stability levels follow the [Node.js stability index](https://nodejs.org/api/documentation.html#stability-index) convention
-adapted for a micro-runtime library:
+aiaudiojs is on the ai*js 1.0-track surface. Public names remain stable unless a future major release says otherwise.
 
-- **stable** — the API is production-ready. Breaking changes require a major version bump.
-- **experimental** — the API is usable but may change in a minor version. Feedback welcome.
+## Stable API
 
----
+| Surface | Status | Notes |
+| --- | --- | --- |
+| `createAudio(options?)` | Stable | One controller over Howler's shared audio runtime. |
+| `Audio.unlock()` | Stable | Best-effort resume for browser gesture gates. |
+| `Audio.load(url, signal?)` | Stable | Rejects with `AbortError` on signal abort. |
+| `Audio.crossfade(from, to, opts)` | Stable | `linear` default; `equal-power` requires Web Audio. |
+| `Audio.disposeAll()` | Stable | Idempotent teardown for managed sounds/listeners. |
+| `Sound` methods | Stable | `play`, `pause`, `stop`, `resume`, `fade`, `dispose`, `nativeHowl`, `disposed`. |
+| Error classes | Stable | `AudioError`, `AudioDisposedError`. |
 
-## Feature stability table
+## Boundaries
 
-| Feature | Stability | Notes |
-| ------- | --------- | ----- |
-| `crossfade(curve: 'linear')` | stable | Shipped in 0.1.0. Default behaviour; backward-compatible. Delegates to `Howl.fade()`. Frozen on the 1.0 track (declared 0.4.0). |
-| `crossfade(curve: 'equal-power')` | stable | Shipped in 0.3.0. Requires Howler in Web Audio mode (`_sounds[i]._node` defined). HTML5 fallback mode throws `AudioError`; callers may downgrade to `'linear'`. Frozen on the 1.0 track (declared 0.4.0). |
-| `Sound.resume(id?)` | experimental | Shipped in 0.5.6. With an `id`, resumes that voice; without one, resumes every genuinely-paused voice (`_paused === true && _ended !== true`) and returns the last resumed id, or `-1` if none. Reaches into Howler's private `_sounds` to enumerate paused voices, so it is **not** frozen on the 1.0 track until that reach-in is validated against the supported Howler range; the signature may still adjust. Throws `AudioDisposedError` after `dispose()`. |
-| Spatial audio (PannerNode / HRTF) | experimental | Planned for v0.7 — roguelite room-direction audio. Not implemented in this cycle. API surface not yet defined. |
-
----
-
-## 1.0-track freeze (declared 0.4.0)
-
-The 0.3.x public surface — the `createAudio` factory; `load`, `play` / `pause` / `stop` /
-`fade`, both `crossfade` curves, `dispose` / `disposeAll`, `nativeHowl`; the `AudioError` /
-`AudioDisposedError` classes; and the exported type / interface shapes (`AudioOptions`,
-`PlayOptions`, `CrossfadeCurve`, `CrossfadeOptions`, `Sound`, `Audio`) — is **frozen on
-the 1.0 track**. It will not change shape (no
-signature, error-name, or default-behaviour changes) before 1.0, and once 1.0 ships it
-is frozen for the entire 1.x line. The 0.4.0 dependency-reduction release adds no runtime
-API; it only confirms this freeze and the family dependency hygiene.
-
-`howler` remains a required `peerDependency` — see the 0.4.0 CHANGELOG and the README
-["Why aiaudiojs"](README.md#why-aiaudiojs) section for the dependency decision.
+- Howler remains the only peer runtime. This package does not replace Howler sprites, codecs, or HTML5 fallback behavior.
+- Master volume is shared through Howler global state; multiple controllers can affect each other.
+- `PlayOptions.volume` is per-play gain and defaults to `1`, not the controller master volume.
+- `equal-power` crossfade uses Howler/Web Audio internals and may throw under HTML5 fallback.
+- Aborted loads reject promptly, but a late Howler internal load event can still occur; dispose during scene teardown.
 
 ---
 
@@ -583,82 +135,32 @@ API; it only confirms this freeze and the family dependency hygiene.
 
 # Contributing to aiaudiojs
 
-Thanks for taking the time to look. aiaudiojs is a deliberately thin shell
-over Howler.js (target ≤ 2 KB gzip for the shell, with Howler ~9.7 KB
-external); contributions that keep the surface narrow are easier to accept
-than ones that expand it.
+Keep changes small, typed, and aligned with the ai*js lifecycle conventions.
 
-## Quick start
+## Local workflow
 
 ```bash
 pnpm install
-pnpm test            # vitest
-pnpm coverage        # vitest with v0.1.0 thresholds (95/90/100/100)
-pnpm typecheck       # tsc --noEmit on strict mode
-pnpm lint            # biome check
-pnpm build           # tsup; dual ESM/CJS + .d.ts (howler is external)
-pnpm verify:exports  # ensures package.json#exports matches dist/
-pnpm verify:llms     # ensures llms-full.txt is in sync with README + CHANGELOG
-pnpm check:size      # gzip per subpath against the size budget
+pnpm typecheck
+pnpm test
+pnpm verify:docs
+pnpm build:llms
+pnpm verify:llms
+pnpm check:size
 ```
 
-## What gets in easily
+Run `pnpm lint` before PRs. If docs change, regenerate `llms-full.txt`.
 
-- Bug fixes with a failing test added first
-- README / typing corrections
-- Tests that lock down existing behaviour
-- Tightening iOS Safari unlock heuristics that we can verify on real device
+## Rules
 
-## What needs discussion first
-
-- Anything that changes the public surface (`createAudio`, `Audio`, `Sound`,
-  error classes)
-- Anything that bundles Howler.js into the dist (must stay external)
-- Anything that adds a second runtime peer (we have one — Howler — and one
-  is enough)
-- 3D spatial / sprite generator / audio worklet host (explicit non-goals;
-  use Howler directly or `audiosprite` CLI)
-- Anything that pushes the shell gzip past 2 KB
-
-## Design principles
-
-aiaudiojs follows the ai*js library-core priority order:
-
-> Security > Correctness > Simplicity > YAGNI > Performance
-
-Key invariants:
-
-- `dispose()` is idempotent at both the Audio and Sound levels.
-- Every long-running operation accepts an `AbortSignal`; aborting cancels
-  in-flight work and rejects pending promises with the standard `AbortError`.
-- `crossfade()` equal-power ramps run on the AudioContext timeline via
-  `setValueCurveAtTime`; the default linear curve delegates to `Howl.fade()`,
-  whose timing follows Howler's mode (Web Audio vs HTML5 fallback).
-- The shell never bundles Howler; it must always resolve through the user's
-  `peerDependency`.
-- Escape hatch `sound.nativeHowl` (readonly property) exists so users never
-  feel trapped by the narrow surface.
-
-## Commit & PR style
-
-- Commit messages: imperative subject under 70 chars; body explains *why*.
-- PRs: keep scope to one topic. Link the issue if any.
-- Tests required for any behaviour change. iOS Safari behaviour must be
-  noted in the PR even if no automated test exists (real-device check).
-
-## Reporting issues
-
-- Minimal reproduction welcome (paste the smallest `createAudio` + load +
-  play sequence that shows the bug).
-- For iOS-specific bugs, please include OS version, browser version, and
-  whether the bug also reproduces against Howler directly — if it does,
-  the bug belongs upstream and we can't fix it here.
-- For security issues, please email the maintainer rather than filing
-  publicly.
+- Do not hide Howler behavior. Document browser/audio constraints plainly.
+- Preserve destructurable methods and idempotent disposal.
+- Prefer `AbortSignal` for cancellation and named errors for misuse.
+- Keep README examples short and runnable.
+- Discuss API or peer dependency changes before implementation.
 
 ## License
 
-By contributing, you agree your changes will be licensed under the MIT
-license that covers this project.
+MIT
 
 ---
