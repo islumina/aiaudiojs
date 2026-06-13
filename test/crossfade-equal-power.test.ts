@@ -70,6 +70,16 @@ vi.mock("howler", () => {
       handlers.get(this)?.set(event, cb);
     }
 
+    // Real Howler exposes off(); load() detaches its `load`/`loaderror`
+    // once-handlers on settle (the post-abort late-load guard) with a bare
+    // off() that clears every event on this Howl. Mirror both shapes so the
+    // mock does not diverge from Howler and throw on the new detach call.
+    off(event?: string): void {
+      const map = handlers.get(this);
+      if (event === undefined) map?.clear();
+      else map?.delete(event);
+    }
+
     play(): number {
       const id = nextSoundId++;
       // Web Audio mode: _node has a .gain AudioParam.

@@ -50,6 +50,20 @@ vi.mock("howler", () => {
   const listeners = new Map<object, Map<string, Map<number | undefined, AnyFn[]>>>();
   let nextSoundId = 1;
   let mockShouldLoadFail = false;
+  // Most recently constructed Howl — exposed via __lastHowl so a test can drive
+  // a late `load`/`loaderror` on the very instance load() created internally
+  // (load() does not expose its Howl until the promise resolves, and in the
+  // abort race it never does).
+  let lastHowl: object | undefined;
+  // Manual-load mode: when true, a freshly-constructed Howl does NOT auto-fire
+  // its `load`/`loaderror` on the next microtask. A test drives the timing via
+  // __emitLoad / __emitLoadError instead, faithfully modelling Howler's
+  // decode-completes-LATER behaviour — including a `load` event that fires
+  // AFTER an abort has already rejected the load() promise (the F3 race). This
+  // is the D17 fidelity discipline: the mock must emit `load` the way Howler
+  // does (event-based, asynchronous, decoupled from when load() was called),
+  // not on a fixed single microtask the abort happens to precede.
+  let mockManualLoad = false;
 
   class Howl {
     opts: { src: string[]; preload?: boolean };
@@ -59,9 +73,12 @@ vi.mock("howler", () => {
 
     constructor(opts: { src: string[]; preload?: boolean }) {
       this.opts = opts;
+      lastHowl = this;
       handlers.set(this, new Map());
       listeners.set(this, new Map());
-      // Auto-fire load / loaderror on the next microtask.
+      // Auto-fire load / loaderror on the next microtask — UNLESS a test opted
+      // into manual-load mode to drive the decode-completion timing itself.
+      if (mockManualLoad) return;
       Promise.resolve().then(() => {
         const map = handlers.get(this);
         if (map === undefined) return;
@@ -85,7 +102,23 @@ vi.mock("howler", () => {
       idMap.get(key)!.push(cb);
     }
 
-    off(event: string, cb?: AnyFn, id?: number): void {
+    off(event?: string, cb?: AnyFn, id?: number): void {
+      // Real Howler's off() has three shapes (howler.js source):
+      //   - off()            → clear EVERY listener of every type on this Howl;
+      //   - off(event)       → clear ALL listeners (once + repeating) for event;
+      //   - off(event,cb,id) → remove one specific repeating listener.
+      // load() detaches its `load`/`loaderror` once-handlers with a bare off()
+      // (the Howl is freshly built and carries only those), so a later
+      // __emitLoad / __emitLoadError becomes a no-op — which is how a test
+      // observes the wiring was removed on abort/settle.
+      if (event === undefined) {
+        handlers.get(this)?.clear();
+        listeners.get(this)?.clear();
+        return;
+      }
+      if (cb === undefined && id === undefined) {
+        handlers.get(this)?.delete(event);
+      }
       const evMap = listeners.get(this);
       if (evMap === undefined) return;
       const idMap = evMap.get(event);
@@ -131,6 +164,26 @@ vi.mock("howler", () => {
       if (wildArr !== undefined) {
         for (const cb of [...wildArr]) cb(id);
       }
+    }
+
+    /**
+     * Test helper: fire the `load` once-handler LATE — i.e. after the caller
+     * has already had a chance to abort the load() promise. Models Howler's
+     * decode completing asynchronously and emitting `load` regardless of when
+     * load() was invoked. If the handler was already detached (load() cleaned
+     * up on abort / settle), this is a no-op — which is exactly how a test
+     * asserts the listener was removed.
+     */
+    __emitLoad(): void {
+      handlers.get(this)?.get("load")?.(undefined, undefined);
+    }
+
+    /**
+     * Test helper: fire the `loaderror` once-handler late, same semantics as
+     * {@link __emitLoad}. No-op once the handler has been detached.
+     */
+    __emitLoadError(): void {
+      handlers.get(this)?.get("loaderror")?.(undefined, "mock error");
     }
 
     /**
@@ -245,10 +298,18 @@ vi.mock("howler", () => {
     __setMockLoadFail: (v: boolean) => {
       mockShouldLoadFail = v;
     },
+    // Test helper — toggle manual-load mode so a test drives `load`/`loaderror`
+    // timing (via Howl.__emitLoad / __emitLoadError) instead of the automatic
+    // single-microtask fire. Needed to reproduce the post-abort late-load race.
+    __setManualLoad: (v: boolean) => {
+      mockManualLoad = v;
+    },
     __resetSoundId: () => {
       nextSoundId = 1;
     },
     __getMockCtx: () => mockCtx,
+    // Test helper — the most recently constructed Howl (the one load() built).
+    __lastHowl: () => lastHowl,
   };
 });
 
@@ -256,7 +317,14 @@ vi.mock("howler", () => {
 // Imports (after vi.mock hoisting)
 // ---------------------------------------------------------------------------
 
-import { Howler, __getMockCtx, __resetSoundId, __setMockLoadFail } from "howler";
+import {
+  Howler,
+  __getMockCtx,
+  __lastHowl,
+  __resetSoundId,
+  __setManualLoad,
+  __setMockLoadFail,
+} from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -272,6 +340,21 @@ function resetSoundId(): void {
   (__resetSoundId as () => void)();
 }
 
+function setManualLoad(v: boolean): void {
+  (__setManualLoad as (v: boolean) => void)(v);
+}
+
+/** The Howl that load() constructed internally, with its late-emit helpers. */
+interface LateLoadHowl {
+  __emitLoad(): void;
+  __emitLoadError(): void;
+  unload(): void;
+}
+
+function lastHowl(): LateLoadHowl {
+  return (__lastHowl as () => LateLoadHowl)();
+}
+
 function getMockCtx(): { state: string; resume: ReturnType<typeof vi.fn> } {
   return (__getMockCtx as () => { state: string; resume: ReturnType<typeof vi.fn> })();
 }
@@ -282,6 +365,7 @@ function getMockCtx(): { state: string; resume: ReturnType<typeof vi.fn> } {
 
 beforeEach(() => {
   setLoadFail(false);
+  setManualLoad(false);
   resetSoundId();
   vi.clearAllMocks();
   // Re-seed resume mock after clearAllMocks.
@@ -290,6 +374,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setLoadFail(false);
+  setManualLoad(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -467,6 +552,86 @@ describe("C. load", () => {
     const audio = createAudio({ autoUnlock: false });
     audio.dispose();
     await expect(audio.load("test.mp3")).rejects.toBeInstanceOf(AudioDisposedError);
+  });
+
+  // F3 — abort racing decode completion. Howler's decode can finish and emit
+  // `load` AFTER load()'s AbortSignal has already rejected the promise. Before
+  // the settled-guard fix, the still-attached `once("load")` handler then built
+  // a SoundImpl and added it to the managed set — a Sound nobody holds, leaked
+  // until the next disposeAll() reclaims it. These tests drive that exact late
+  // event (manual-load mode → __emitLoad after abort) and pin that the Sound
+  // never enters the managed set and that the Howler listeners were detached.
+
+  it("C7. late `load` after an abort does NOT enter the managed set", async () => {
+    setManualLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const ctrl = new AbortController();
+    const promise = audio.load("test.mp3", ctrl.signal);
+    const howl = lastHowl();
+    const unloadSpy = vi.spyOn(howl, "unload");
+
+    // Abort first — load() rejects with AbortError and unloads the Howl once.
+    ctrl.abort();
+    const err = await promise.catch((e: unknown) => e);
+    expect((err as DOMException).name).toBe("AbortError");
+    expect(unloadSpy).toHaveBeenCalledTimes(1); // abort-path unload
+
+    // Howler's decode now completes and emits `load` LATE.
+    howl.__emitLoad();
+
+    // If the late `load` leaked a SoundImpl into the managed set, disposeAll()
+    // would dispose it and call unload() a SECOND time. A clean run leaves the
+    // set empty, so unload() is never called again.
+    audio.disposeAll();
+    expect(unloadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("C8. abort detaches the Howler load/loaderror listeners so a late emit is a no-op", async () => {
+    setManualLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const ctrl = new AbortController();
+    const promise = audio.load("test.mp3", ctrl.signal);
+    const howl = lastHowl();
+    const offSpy = vi.spyOn(howl as unknown as { off: AnyFn }, "off");
+
+    ctrl.abort();
+    await promise.catch(() => {});
+
+    // The fix must detach the Howler lifecycle listeners on abort. It does so
+    // with a bare off() (the only listeners on this fresh Howl are `load` /
+    // `loaderror`), which clears every event on the instance.
+    expect(offSpy).toHaveBeenCalled();
+
+    // With the handlers gone, a late decode `load` AND a late `loaderror`
+    // resolve/settle nothing and mutate no state — disposeAll() finds an empty
+    // managed set, so the Howl is never unloaded a second time.
+    const unloadSpy = vi.spyOn(howl, "unload");
+    howl.__emitLoad();
+    howl.__emitLoadError();
+    audio.disposeAll();
+    expect(unloadSpy).not.toHaveBeenCalled();
+  });
+
+  it("C9. late `loaderror` after an abort is a no-op (no double-settle, no state change)", async () => {
+    setManualLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const ctrl = new AbortController();
+    const promise = audio.load("test.mp3", ctrl.signal);
+    const howl = lastHowl();
+    const unloadSpy = vi.spyOn(howl, "unload");
+
+    ctrl.abort();
+    const err = await promise.catch((e: unknown) => e);
+    expect((err as DOMException).name).toBe("AbortError");
+    const unloadAfterAbort = unloadSpy.mock.calls.length;
+
+    // A late `loaderror` (decode failed after the abort) must not unload again
+    // nor otherwise act on the already-settled load.
+    howl.__emitLoadError();
+    expect(unloadSpy.mock.calls.length).toBe(unloadAfterAbort);
+
+    audio.disposeAll();
+    expect(unloadSpy.mock.calls.length).toBe(unloadAfterAbort);
   });
 });
 
