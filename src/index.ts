@@ -673,26 +673,45 @@ export function createAudio(opts?: AudioOptions): Audio {
     }
     return new Promise<Sound>((resolve, reject) => {
       const howl = new Howl({ src: [url], preload: true });
+      // First of load / loaderror / abort to fire wins; the rest are no-ops.
+      // Without this guard a late Howler `load` — decode finishing AFTER an
+      // abort already rejected — would still run the `once("load")` callback,
+      // add a SoundImpl nobody holds to `state.sounds`, and leak it until the
+      // next disposeAll() reclaimed it (REVIEW.md P2). `cleanup()` also detaches
+      // BOTH lifecycle listeners so that late event never reaches us at all.
+      let settled = false;
+      let sound: SoundImpl;
       let abortHandler: (() => void) | undefined;
-      const cleanupAbort = (): void => {
-        if (abortHandler !== undefined && signal !== undefined) {
-          signal.removeEventListener("abort", abortHandler);
+      const cleanup = (): void => {
+        settled = true;
+        // `abortHandler` is only ever assigned inside the `signal !== undefined`
+        // branch below, so a defined handler already implies a defined signal.
+        if (abortHandler !== undefined) {
+          signal?.removeEventListener("abort", abortHandler);
         }
+        // Detach BOTH lifecycle listeners. This Howl is freshly built here and
+        // not yet exposed, so the only listeners on it are the `load` /
+        // `loaderror` once-handlers above; a bare off() clears every Howler
+        // event on it (howler.js: off() with no event empties all `_on*`).
+        howl.off();
       };
       howl.once("load", () => {
-        cleanupAbort();
-        const sound = new SoundImpl(howl, state);
+        if (settled) return;
+        cleanup();
+        sound = new SoundImpl(howl, state);
         state.sounds.add(sound);
         resolve(sound);
       });
       howl.once("loaderror", (_id: number, errMsg: unknown) => {
-        cleanupAbort();
+        if (settled) return;
+        cleanup();
         howl.unload();
         reject(new AudioError(`load failed: ${String(errMsg)}`));
       });
       if (signal !== undefined) {
         abortHandler = (): void => {
-          cleanupAbort();
+          if (settled) return;
+          cleanup();
           howl.unload();
           reject(new DOMException("Load aborted", "AbortError"));
         };
