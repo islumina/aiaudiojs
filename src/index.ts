@@ -535,21 +535,20 @@ class SoundImpl implements Sound {
 
   resume(id?: number): number {
     this.ck();
-    if (id !== undefined) {
-      this.howl.play(id);
-      return id;
-    }
+    // Single pass over the voice pool so the ended-voice guard cannot drift
+    // between the id-specific and no-arg paths (C9 / AUD-B-01). Howler marks
+    // stopped / naturally-ended / never-played pooled voices `_paused === true`
+    // AND `_ended === true`; replaying those restarts finished SFX from zero.
     let last = -1;
     for (const s of getSounds(this.howl)) {
-      // Resume only genuinely-paused voices. Howler marks stopped / naturally
-      // ended / never-played pooled voices `_paused === true` too, but with
-      // `_ended === true` — replaying those would restart finished SFX from
-      // zero or start a never-played voice (AUD-B-01; see the `_paused`
-      // comment on HowlInternalSound).
-      if (s._paused === true && s._ended !== true && s._id !== undefined) {
-        this.howl.play(s._id);
-        last = s._id;
+      if (s._paused !== true || s._ended === true || s._id === undefined) continue;
+      if (id !== undefined) {
+        if (s._id !== id) continue;
+        this.howl.play(id);
+        return id;
       }
+      this.howl.play(s._id);
+      last = s._id;
     }
     return last;
   }

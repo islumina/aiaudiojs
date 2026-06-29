@@ -1118,6 +1118,47 @@ describe("I. Sound.resume", () => {
     expect(result).toBe(pausedId);
     audio.dispose();
   });
+
+  // C9 — resume(id) must NOT replay a stopped/ended voice.
+  // The no-arg path already guards `_ended !== true`; the id path must apply the
+  // same predicate. Asymmetry means resume(stoppedId) unconditionally calls
+  // howl.play(id), restarting a voice that was finished from zero.
+  it("I9. resume(id) returns -1 and does NOT call howl.play when the voice is paused+ended (stopped)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    sound.stop(id); // parks voice as _paused:true, _ended:true (Howler semantics)
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume(id);
+    expect(playSpy).not.toHaveBeenCalledWith(id);
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I10. resume(id) returns -1 and does NOT replay a naturally-ended voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    // Natural end: __emit("end", id) parks the non-loop voice as _paused+_ended.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume(id);
+    expect(playSpy).not.toHaveBeenCalledWith(id);
+    expect(result).toBe(-1);
+    audio.dispose();
+  });
+
+  it("I11. resume(id) still calls howl.play(id) for a genuinely-paused (not ended) voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const id = sound.play();
+    sound.pause(id); // _paused:true, _ended:false — genuinely paused
+    const playSpy = vi.spyOn(sound.nativeHowl, "play");
+    const result = sound.resume(id);
+    expect(playSpy).toHaveBeenCalledWith(id);
+    expect(result).toBe(id);
+    audio.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------

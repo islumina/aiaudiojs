@@ -15,7 +15,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Thin Web Audio shell over Howler.js with ai*js lifecycle conventions: idempotent `dispose()`, `AbortSignal` support, explicit `unlock()`, and first-class `crossfade()`.
 
-> **Status: 0.5.8 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
+> **Status: 0.5.9 - stable 1.0-track surface.** Howler remains a peer dependency; the package ships the root entry only.
 
 ## Install
 
@@ -83,6 +83,10 @@ MIT
 All notable changes to aiaudiojs are summarized here. Older entries are intentionally compact so AI agents read current behavior first.
 
 ## [Unreleased]
+
+## [0.5.9] - 2026-06-29
+
+- Fixed: `resume(id)` no longer replays stopped / naturally-ended pooled voices — the id path now shares the ended-voice guard with the no-arg path.
 
 ## [0.5.8] - 2026-06-14
 
