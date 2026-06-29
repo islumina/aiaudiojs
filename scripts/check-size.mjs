@@ -24,7 +24,12 @@ const budgets = {
   // `Sound.resume(id?)` (next release): bumped 2100 → 2200 B. The new public
   // mutator adds a single-id fast path plus a paused-voice enumeration over
   // `_sounds` — real runtime code. The shell stays well under 3 KB gzip.
-  "dist/index.js": 2_200,
+  //
+  // C9 fix (0.5.9 wave): bumped 2200 → 2210 B. The id-path now shares the
+  // ended-voice guard with the no-arg path via a single-loop restructure
+  // (prevents drift). The guard adds one `_id !== id` continue check per loop
+  // iteration plus an early-return arm — irreducible runtime logic.
+  "dist/index.js": 2_210,
 };
 
 const failures = [];
