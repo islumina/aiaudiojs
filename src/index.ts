@@ -201,12 +201,14 @@ export interface Audio {
    * @remarks
    * **F3 — abort racing decode completion:** If `signal` aborts while a load is
    * in flight, `load()` rejects with `AbortError` and unloads the Howl. The
-   * abort listener is removed once the `load` event fires, so aborting *after*
-   * the load resolves is a no-op. In the narrow case where Howler still emits
-   * its internal `load` event *after* an abort has already rejected (the decode
-   * was already in-flight), a `Sound` is briefly added to the internal set and
-   * then reclaimed by the next {@link disposeAll}. Call {@link disposeAll} if
-   * you abort a load whose completion you cannot guarantee.
+   * first of Howler's `load` / `loaderror` events or the abort to fire settles
+   * the promise and detaches the other two listeners (a `settled` guard plus
+   * bare `off()`), so a `load` event Howler still emits *after* the abort has
+   * already rejected is a no-op: no `Sound` is added to the internal set and
+   * no second `unload()` happens. `disposeAll()` racing an in-flight `load()`
+   * is handled the same way: the eventual `load` rejects with
+   * {@link AudioDisposedError} instead of adding a `Sound` nobody could
+   * reclaim.
    *
    * @security The `url` parameter is passed directly to `new Howl({ src: [url] })`,
    * which forwards it to `Audio.src` (HTML5 mode) or `XMLHttpRequest.open`
