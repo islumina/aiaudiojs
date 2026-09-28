@@ -29,7 +29,7 @@ button.addEventListener("click", async () => {
 window.addEventListener("beforeunload", () => audio.disposeAll());
 ```
 
-`autoUnlock` 預設為 `true`，會掛上 `touchstart`、`mousedown`、`keydown`。瀏覽器仍要求 resume 發生在真實 user gesture 內；最保險的做法是在第一個可信 UI 事件中呼叫 `audio.unlock()`。
+`autoUnlock` 預設為 `true`，會掛上 `touchend`、`pointerup`、`keydown`（HTML 規範中會觸發 user activation 的事件；`touchstart` 不算，瀏覽器會拒絕從它呼叫的 `resume()`）。監聽器會持續保留、每次手勢都重試，直到 `resume()` 真的讓 context 變成 running 才會移除。瀏覽器仍要求 resume 發生在真實 user gesture 內；最保險的做法是在第一個可信 UI 事件中呼叫 `audio.unlock()`。
 
 ## 核心 API
 

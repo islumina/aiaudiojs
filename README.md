@@ -29,7 +29,7 @@ button.addEventListener("click", async () => {
 window.addEventListener("beforeunload", () => audio.disposeAll());
 ```
 
-`autoUnlock` defaults to `true` and attaches `touchstart`, `mousedown`, and `keydown` listeners. Browsers still require the resume attempt to happen inside a real user gesture; call `audio.unlock()` from your first trusted UI event when in doubt.
+`autoUnlock` defaults to `true` and attaches `touchend`, `pointerup`, and `keydown` listeners (activation-triggering events per the HTML spec — `touchstart` is not one, so browsers refuse `resume()` from it). Listeners stay attached, retrying on every such gesture, until `resume()` actually leaves the context running. Browsers still require the resume attempt to happen inside a real user gesture; call `audio.unlock()` from your first trusted UI event when in doubt.
 
 ## Core API
 
