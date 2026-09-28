@@ -508,6 +508,43 @@ describe("C. equal-power abort", () => {
     vi.useRealTimers();
   });
 
+  it("C5: abort whose freeze throws (engine rejects setValueAtTime) still settles the promise", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    from.play();
+    const ctrl = new AbortController();
+    const p = audio.crossfade(from, to, { duration: 2, signal: ctrl.signal, curve: "equal-power" });
+    let state = "pending";
+    p.then(() => {
+      state = "resolved";
+    });
+    const freezeError = new DOMException(
+      "Can't add events during a curve event",
+      "NotSupportedError",
+    );
+    const fromGain = getFirstGain(
+      from as unknown as {
+        nativeHowl: { _sounds: Array<{ _node?: { gain?: GainParam } }> };
+      },
+    );
+    fromGain!.setValueAtTime.mockImplementation(() => {
+      throw freezeError;
+    });
+    let abortThrew: unknown;
+    try {
+      ctrl.abort();
+    } catch (e) {
+      abortThrew = e;
+    }
+    // The freeze error is not swallowed: it surfaces on the abort dispatch
+    // (window.onerror in a browser; re-thrown by happy-dom) or not at all.
+    if (abortThrew !== undefined) expect(abortThrew).toBe(freezeError);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(state).toBe("resolved");
+    audio.dispose();
+    vi.useRealTimers();
+  });
+
   it("C3: after normal completion, ctrl.abort() is a silent no-op", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();

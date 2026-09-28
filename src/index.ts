@@ -420,13 +420,20 @@ function resolveAfterWithAbort(
     const finish = (aborted: boolean): void => {
       if (done) return;
       done = true;
-      if (aborted) onAbort();
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
+      // try/finally: if the abort side effect throws (e.g. an engine rejecting
+      // the equal-power freeze), `done` is already set, so the timer would
+      // return early and the promise would never settle. The exception still
+      // propagates out of the abort listener and is reported there.
+      try {
+        if (aborted) onAbort();
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        detachAbort();
+        resolve();
       }
-      detachAbort();
-      resolve();
     };
 
     timer = setTimeout(() => finish(false), durationMs);
