@@ -179,6 +179,19 @@ function getFirstGain(sound: { nativeHowl: { _sounds: Array<{ _node?: { gain?: G
   return node?.gain;
 }
 
+// The equal-power ramp is scheduled as setValueAtTime(curve[0], now) followed
+// by one linearRampToValueAtTime per remaining curve point (piecewise linear,
+// the same shape setValueCurveAtTime would render, without its exclusive time
+// window). Rebuild the scheduled curve values and their times from the calls.
+function scheduledRamp(g: GainParam): { curve: number[]; times: number[] } {
+  const start = g.setValueAtTime.mock.calls[0] as [number, number];
+  const ramps = g.linearRampToValueAtTime.mock.calls as Array<[number, number]>;
+  return {
+    curve: [start[0], ...ramps.map((r) => r[0])],
+    times: [start[1], ...ramps.map((r) => r[1])],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Reset between tests
 // ---------------------------------------------------------------------------
@@ -204,7 +217,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("A. backward-compat linear path", () => {
-  it("A1: no curve option calls Howl.fade() on both sounds; no _node.gain.setValueCurveAtTime; resolves after duration", async () => {
+  it("A1: no curve option calls Howl.fade() on both sounds; no _node.gain ramp scheduling; resolves after duration", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();
     const fadeSpy = vi.spyOn(from.nativeHowl, "fade");
@@ -228,9 +241,11 @@ describe("A. backward-compat linear path", () => {
     // to's play is called in linear path too; but gain scheduling should not happen.
     if (fromGain !== undefined) {
       expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
+      expect(fromGain.linearRampToValueAtTime).not.toHaveBeenCalled();
     }
     if (toGain !== undefined) {
       expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
+      expect(toGain.linearRampToValueAtTime).not.toHaveBeenCalled();
     }
     audio.dispose();
     vi.useRealTimers();
@@ -299,7 +314,7 @@ describe("B. equal-power baseline", () => {
     vi.useRealTimers();
   });
 
-  it("B4: from's _node.gain.setValueCurveAtTime called once with Float32Array(64) and correct duration; cancelScheduledValues then setValueAtTime called first (order)", async () => {
+  it("B4: from's _node.gain ramps through the 64-point cos curve over the duration via linearRampToValueAtTime (no setValueCurveAtTime); cancelScheduledValues then setValueAtTime called first (order)", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
@@ -312,23 +327,35 @@ describe("B. equal-power baseline", () => {
     await p;
 
     const fromGain = fromHowl._sounds[0]!._node.gain;
-    expect(fromGain.setValueCurveAtTime).toHaveBeenCalledTimes(1);
-    const curveCall = fromGain.setValueCurveAtTime.mock.calls[0]!;
-    expect(curveCall[0]).toBeInstanceOf(Float32Array);
-    expect((curveCall[0] as Float32Array).length).toBe(64);
-    expect(curveCall[2]).toBe(2);
+    // No SetValueCurve event: its exclusive window would make any other gain
+    // write during the ramp throw NotSupportedError.
+    expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
+    expect(fromGain.setValueAtTime).toHaveBeenCalledTimes(1);
+    expect(fromGain.linearRampToValueAtTime).toHaveBeenCalledTimes(63);
+    const { curve, times } = scheduledRamp(fromGain);
+    expect(curve).toHaveLength(64);
+    // Starts at now (0), points evenly spaced, ends exactly at now + duration.
+    expect(times[0]).toBe(0);
+    for (let i = 1; i < 64; i++) {
+      expect(times[i]!).toBeCloseTo((2 * i) / 63, 9);
+      expect(times[i]!).toBeGreaterThan(times[i - 1]!);
+    }
+    expect(times[63]).toBe(2);
+    for (let i = 0; i < 64; i++) {
+      expect(curve[i]!).toBeCloseTo(Math.cos((i / 63) * (Math.PI / 2)), 5);
+    }
 
-    // Order: cancelScheduledValues → setValueAtTime → setValueCurveAtTime
+    // Order: cancelScheduledValues → setValueAtTime → first linearRampToValueAtTime
     const cancelOrder = fromGain.cancelScheduledValues.mock.invocationCallOrder[0]!;
     const setAtTimeOrder = fromGain.setValueAtTime.mock.invocationCallOrder[0]!;
-    const setCurveOrder = fromGain.setValueCurveAtTime.mock.invocationCallOrder[0]!;
+    const rampOrder = fromGain.linearRampToValueAtTime.mock.invocationCallOrder[0]!;
     expect(cancelOrder).toBeLessThan(setAtTimeOrder);
-    expect(setAtTimeOrder).toBeLessThan(setCurveOrder);
+    expect(setAtTimeOrder).toBeLessThan(rampOrder);
     audio.dispose();
     vi.useRealTimers();
   });
 
-  it("B5: to's _node.gain.setValueAtTime(0, now) called before setValueCurveAtTime", async () => {
+  it("B5: to's _node.gain.setValueAtTime(0, now) called before the sin ramp (linearRampToValueAtTime points)", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
@@ -342,18 +369,25 @@ describe("B. equal-power baseline", () => {
     };
     const toGain = toHowl._sounds[0]!._node.gain;
 
-    expect(toGain.setValueCurveAtTime).toHaveBeenCalledTimes(1);
+    expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
+    expect(toGain.linearRampToValueAtTime).toHaveBeenCalledTimes(63);
     // setValueAtTime(0, now) is called on to's gain
     expect(toGain.setValueAtTime).toHaveBeenCalled();
     const setAtTimeCall = toGain.setValueAtTime.mock.calls[0]!;
     expect(setAtTimeCall[0]).toBe(0);
+    expect(setAtTimeCall[1]).toBe(0);
+    const { curve, times } = scheduledRamp(toGain);
+    expect(times[63]).toBe(2);
+    for (let i = 0; i < 64; i++) {
+      expect(curve[i]!).toBeCloseTo(Math.sin((i / 63) * (Math.PI / 2)), 5);
+    }
 
-    // Order check: cancelScheduledValues → setValueAtTime → setValueCurveAtTime
+    // Order check: cancelScheduledValues → setValueAtTime → first linearRampToValueAtTime
     const cancelOrder = toGain.cancelScheduledValues.mock.invocationCallOrder[0]!;
     const setAtOrder = toGain.setValueAtTime.mock.invocationCallOrder[0]!;
-    const setCurveOrder = toGain.setValueCurveAtTime.mock.invocationCallOrder[0]!;
+    const rampOrder = toGain.linearRampToValueAtTime.mock.invocationCallOrder[0]!;
     expect(cancelOrder).toBeLessThan(setAtOrder);
-    expect(setAtOrder).toBeLessThan(setCurveOrder);
+    expect(setAtOrder).toBeLessThan(rampOrder);
     audio.dispose();
     vi.useRealTimers();
   });
@@ -375,8 +409,8 @@ describe("B. equal-power baseline", () => {
     const fromGain = fromHowl._sounds[0]!._node.gain;
     const toGain = toHowl._sounds[0]!._node.gain;
 
-    const fromCurve = fromGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
-    const toCurve = toGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+    const fromCurve = scheduledRamp(fromGain).curve;
+    const toCurve = scheduledRamp(toGain).curve;
 
     // from: cos curve, mv=1 → [0] ≈ 1, [63] ≈ 0
     expect(fromCurve[0]).toBeCloseTo(1, 5);
@@ -462,7 +496,7 @@ describe("C. equal-power abort", () => {
     vi.useRealTimers();
   });
 
-  it("C2: pre-aborted signal rejects DOMException(AbortError); NO setValueCurveAtTime called", async () => {
+  it("C2: pre-aborted signal rejects DOMException(AbortError); NO ramp scheduled", async () => {
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
     const ctrl = new AbortController();
@@ -481,6 +515,7 @@ describe("C. equal-power abort", () => {
       const gain = (fromHowl._sounds[0]._node as { gain?: GainParam }).gain;
       if (gain !== undefined) {
         expect(gain.setValueCurveAtTime).not.toHaveBeenCalled();
+        expect(gain.linearRampToValueAtTime).not.toHaveBeenCalled();
       }
     }
     audio.dispose();
@@ -695,8 +730,8 @@ describe("F. masterVolume application (AUD-B-02: master applied once)", () => {
     const fromGain = fromHowl._sounds[0]!._node.gain;
     const toGain = toHowl._sounds[0]!._node.gain;
 
-    const fromCurve = fromGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
-    const toCurve = toGain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+    const fromCurve = scheduledRamp(fromGain).curve;
+    const toCurve = scheduledRamp(toGain).curve;
 
     // Curves are relative and independent of master: from 1→0, to 0→1.
     expect(fromCurve[0]).toBeCloseTo(1, 5);
@@ -731,10 +766,10 @@ describe("G. multi-voice from", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await p;
 
-    // Every from voice must have had setValueCurveAtTime called (the cos ramp).
+    // Every from voice must have had the cos ramp scheduled.
     for (const s of fromHowl._sounds) {
-      expect(s._node.gain.setValueCurveAtTime).toHaveBeenCalledTimes(1);
-      const fromCurve = s._node.gain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+      expect(s._node.gain.linearRampToValueAtTime).toHaveBeenCalledTimes(63);
+      const fromCurve = scheduledRamp(s._node.gain).curve;
       // cos curve: starts near 1 (mv=1), ends near 0.
       expect(fromCurve[0]).toBeCloseTo(1, 5);
       expect(fromCurve[63]).toBeCloseTo(0, 5);

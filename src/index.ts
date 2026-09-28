@@ -63,9 +63,10 @@ export interface PlayOptions {
  * - `'linear'`       — amplitude ramp via Howler fade() (default; backward-compat).
  * - `'equal-power'`  — perceptual-loudness-preserving sin/cos ramp scheduled
  *                     directly on each sound's Web Audio GainNode
- *                     (`_node.gain`) via `setValueCurveAtTime`. Requires Howler
- *                     to be in Web Audio mode; in HTML5 fallback mode it throws
- *                     `AudioError` and the caller may downgrade to linear.
+ *                     (`_node.gain`) as piecewise `linearRampToValueAtTime`
+ *                     points. Requires Howler to be in Web Audio mode; in HTML5
+ *                     fallback mode it throws `AudioError` and the caller may
+ *                     downgrade to linear.
  *
  * @public
  */
@@ -87,7 +88,10 @@ export interface CrossfadeOptions {
    *
    * @remarks
    * `'equal-power'` schedules relative `[0, 1]` sin/cos ramps directly on each
-   * sound's Web Audio GainNode (`_node.gain`) via `setValueCurveAtTime`: the
+   * sound's Web Audio GainNode (`_node.gain`) as 64-point piecewise
+   * `linearRampToValueAtTime` schedules (not `setValueCurveAtTime`, whose
+   * exclusive time window makes any other gain write during the ramp — e.g.
+   * Howler's own volume / fade / resume — throw `NotSupportedError`): the
    * outgoing sound follows `cos` (1 -> 0) and the incoming sound follows `sin`
    * (0 -> 1), so `sin^2 + cos^2 = 1` keeps the perceived loudness flat. The
    * curves are NOT scaled by the master volume — the master is applied exactly
@@ -201,8 +205,9 @@ export interface Audio {
    * Default `'linear'` curve delegates to `Howl.fade()` on both ramps; aborting
    * via `opts.signal` clears the resolve timer but cannot stop the in-flight
    * Howler ramp (both continue silently). Opt-in `curve: 'equal-power'` (0.3.0)
-   * schedules sin/cos ramps on the AudioContext via `setValueCurveAtTime`,
-   * preserving perceptual loudness; abort cancels the schedule cleanly.
+   * schedules sin/cos ramps on the AudioContext as piecewise
+   * `linearRampToValueAtTime` points, preserving perceptual loudness; abort
+   * cancels the schedule cleanly.
    *
    * **Failure channels — synchronous `throw` vs promise rejection.** This method
    * reports errors on two different channels; a `.catch()` alone does NOT cover
@@ -239,8 +244,8 @@ export interface Audio {
    * playing at its full relative gain before calling
    * `crossfade({ curve: 'equal-power' })`.
    *
-   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a `setValueCurveAtTime`
-   * / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
+   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a
+   * `linearRampToValueAtTime` / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
    * is closed unexpectedly mid-crossfade), the `to` sound may be left running at
    * its scheduled gain with no further ramp applied. This is a known defensive
    * edge case distinct from the pre-flight `AudioError` throws above: it surfaces
@@ -795,7 +800,17 @@ export function createAudio(opts?: AudioOptions): Audio {
     const g = s._node?.gain as AudioParam;
     g.cancelScheduledValues(now);
     g.setValueAtTime(curve[0] as number, now);
-    g.setValueCurveAtTime(curve, now, dur);
+    // One linear ramp per remaining curve point: the same shape
+    // setValueCurveAtTime renders (it interpolates linearly between points),
+    // but without its exclusive [now, now + dur) window. The spec requires
+    // NotSupportedError for ANY other automation call inside a curve, and
+    // Howler's per-voice gain writes (volume / fade / mute, play(id)) are
+    // setValueAtTime(v, now) — they would throw mid-crossfade.
+    const last = curve.length - 1;
+    for (let i = 1; i <= last; i++) {
+      // `i / last` is exactly 1 for the final point, so it lands on now + dur.
+      g.linearRampToValueAtTime(curve[i] as number, now + dur * (i / last));
+    }
     s._volume = terminal;
     return g;
   }
@@ -819,8 +834,8 @@ export function createAudio(opts?: AudioOptions): Audio {
     }
     // `from` is assumed to be already playing (crossfade contract); only the
     // incoming `to` is started here. Both fades are scheduled DIRECTLY on
-    // Howler's per-sound GainNode (`_node.gain`) via setValueCurveAtTime —
-    // Howl.fade() is not used in this path. No extra GainNodes are inserted,
+    // Howler's per-sound GainNode (`_node.gain`) as piecewise linear ramps
+    // (see rampSound) — Howl.fade() is not used in this path. No extra GainNodes are inserted,
     // so there is nothing to re-route or restore.
     const toId = to.play({ volume: 0 });
     // Past this point a voice is live on `to`; any reach-in failure (HTML5

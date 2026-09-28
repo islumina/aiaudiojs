@@ -8,9 +8,12 @@
 import { Howler } from "howler";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
+import type { Audio, Sound } from "../src/index.js";
 import {
+  SpecParam,
   WAV,
   WAV2,
+  WAV3,
   active,
   installFakeWebAudio,
   loadFlushed,
@@ -279,6 +282,86 @@ describe("R9. resume() while a play is queued behind a suspended context", () =>
     bgm.pause(id);
     expect(bgm.resume()).toBe(id);
     expect(active(bgm).map((v) => v._id)).toEqual([id]);
+    audio.disposeAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R10. Howler gain writes during an equal-power ramp (spec-faithful AudioParam)
+// ---------------------------------------------------------------------------
+
+describe("R10. Howler gain writes during an equal-power ramp", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running", undefined, () => new SpecParam());
+  });
+
+  async function setup(): Promise<{ audio: Audio; a: Sound; b: Sound; c: Sound }> {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const a = await loadFlushed(audio, WAV);
+    const b = await loadFlushed(audio, WAV2);
+    const c = await loadFlushed(audio, WAV3);
+    a.play({ loop: true });
+    await vi.advanceTimersByTimeAsync(1);
+    const p = audio.crossfade(a, b, { duration: 4, curve: "equal-power" });
+    p.catch(() => {});
+    // 1 s into the 4 s ramp.
+    (fake as NonNullable<typeof fake>).ctx().currentTime = 1;
+    return { audio, a, b, c };
+  }
+
+  it("R10a. Sound.fade() on the incoming sound mid-ramp returns a promise instead of throwing", async () => {
+    const { audio, b } = await setup();
+    let threw: unknown;
+    try {
+      b.fade(1, 0.5, 200).catch(() => {});
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeUndefined();
+    audio.disposeAll();
+  });
+
+  it("R10b. a linear crossfade b -> c mid-ramp does not throw", async () => {
+    const { audio, b, c } = await setup();
+    let threw: unknown;
+    try {
+      audio.crossfade(b, c, { duration: 1 }).catch(() => {});
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeUndefined();
+    expect(active(c)).toHaveLength(1);
+    audio.disposeAll();
+  });
+
+  it("R10c. pause + resume of the incoming voice mid-ramp does not throw", async () => {
+    const { audio, b } = await setup();
+    const id = active(b)[0]?._id as number;
+    b.pause(id);
+    let threw: unknown;
+    try {
+      b.resume(id);
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeUndefined();
+    audio.disposeAll();
+  });
+
+  it("R10d. aborting mid-ramp freezes the gain without throwing and resolves", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const a = await loadFlushed(audio, WAV);
+    const b = await loadFlushed(audio, WAV2);
+    a.play({ loop: true });
+    await vi.advanceTimersByTimeAsync(1);
+    const ctrl = new AbortController();
+    const p = audio.crossfade(a, b, { duration: 1, curve: "equal-power", signal: ctrl.signal });
+    (fake as NonNullable<typeof fake>).ctx().currentTime = 0.4;
+    expect(() => ctrl.abort()).not.toThrow();
+    expect(await settledWithin(p, 10)).toBe("resolved");
     audio.disposeAll();
   });
 });
