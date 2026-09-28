@@ -25,8 +25,10 @@ export interface AudioOptions {
   autoUnlock?: boolean;
 
   /**
-   * Master volume applied to every Howl created by this Audio instance.
-   * Range `[0, 1]`. Default `1`.
+   * Master volume. Range `[0, 1]`. Default `1`. Applied via Howler's
+   * GLOBAL `Howler.volume()`, not scoped to this Audio instance — other
+   * `Audio` instances (or callers) that also touch `Howler.volume()` share
+   * and can overwrite it. Prefer one `Audio` controller per app/scene.
    */
   volume?: number;
 
@@ -44,7 +46,11 @@ export interface AudioOptions {
  * @public
  */
 export interface PlayOptions {
-  /** Range `[0, 1]`. Default: the Audio instance's master volume. */
+  /**
+   * Relative `[0, 1]` per-voice volume. Default `1`. This is multiplied by
+   * the Audio instance's master volume (applied globally by Howler), not
+   * defaulted to it — defaulting to the master would double-attenuate.
+   */
   volume?: number;
   /** Playback rate. Default `1`. */
   rate?: number;
@@ -80,7 +86,13 @@ export type CrossfadeCurve = "linear" | "equal-power";
 export interface CrossfadeOptions {
   /** Crossfade duration in seconds. */
   duration: number;
-  /** Aborting cancels both ramps and resolves the promise immediately. */
+  /**
+   * Aborting resolves the promise immediately. On the `'equal-power'`
+   * curve, aborting also freezes both ramps at their current gain. On the
+   * `'linear'` curve (Howler's own `fade()`), Howler's fades cannot be
+   * cancelled mid-flight, so aborting does NOT stop the in-progress ramps —
+   * it only makes the returned promise settle early.
+   */
   signal?: AbortSignal;
   /**
    * Fade curve. Default `'linear'` (backward-compat).
@@ -128,9 +140,13 @@ export interface Sound {
   /**
    * Resume a paused instance, or all paused instances if id is omitted.
    *
-   * - With `id`: resumes that specific voice and returns it.
-   * - Without `id`: resumes every currently-paused voice (`_paused === true`)
-   *   and returns the last resumed id, or `-1` if nothing was paused.
+   * - With `id`: resumes that specific voice and returns it, or returns
+   *   `-1` if `id` is not currently a paused, non-ended voice (e.g. it
+   *   already ended naturally, was never paused, or its `play()` is still
+   *   queued behind the AudioContext).
+   * - Without `id`: resumes every currently-paused, non-ended voice
+   *   (`_paused === true && _ended !== true`) and returns the last resumed
+   *   id, or `-1` if nothing was resumed.
    *
    * @throws {@link AudioDisposedError} if called after {@link dispose}.
    */
@@ -149,7 +165,8 @@ export interface Sound {
   /**
    * Idempotent teardown for this Sound only. Stops every instance,
    * unloads the buffer, releases the Howl. Subsequent `play` / `pause` /
-   * `stop` / `fade` throw {@link AudioDisposedError}.
+   * `stop` / `resume` throw {@link AudioDisposedError} synchronously;
+   * `fade` instead returns a promise that rejects with it.
    */
   dispose(): void;
 
@@ -255,7 +272,12 @@ export interface Audio {
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
 
-  /** Master volume. Setting this propagates to every active Sound. */
+  /**
+   * Master volume. Getting/setting this reads/writes Howler's GLOBAL
+   * `Howler.volume()` — it does not iterate or scope to this Audio
+   * instance's own Sounds, so it also affects any other `Audio` instance
+   * or direct Howler usage sharing the page.
+   */
   volume: number;
 
   /**
@@ -263,8 +285,9 @@ export interface Audio {
    * the Audio interface conforms to the ai*js convention that every
    * factory-built handle exposes `dispose()`. Tears down every
    * {@link Sound} this Audio instance created and releases the
-   * underlying Howler bindings. Subsequent `load` / `unlock` /
-   * `crossfade` throw {@link AudioDisposedError}.
+   * underlying Howler bindings. Subsequent `crossfade` throws
+   * {@link AudioDisposedError} synchronously; `load` and `unlock` instead
+   * return a promise that rejects with it.
    */
   dispose(): void;
 
@@ -272,8 +295,9 @@ export interface Audio {
    * Idempotent teardown — identical effect to {@link Audio.dispose};
    * kept as a descriptive name for code paths that want to be explicit
    * about the cascading nature (every Sound this Audio created is torn
-   * down). Subsequent `load` / `unlock` / `crossfade` throw
-   * {@link AudioDisposedError}.
+   * down). Subsequent `crossfade` throws {@link AudioDisposedError}
+   * synchronously; `load` and `unlock` instead return a promise that
+   * rejects with it.
    */
   disposeAll(): void;
 

@@ -586,7 +586,7 @@ describe("B. unlock", () => {
     audio.dispose();
   });
 
-  it("B3. unlock after dispose throws AudioDisposedError", async () => {
+  it("B3. unlock after dispose rejects with AudioDisposedError", async () => {
     const audio = createAudio({ autoUnlock: false });
     audio.dispose();
     await expect(audio.unlock()).rejects.toBeInstanceOf(AudioDisposedError);
