@@ -671,7 +671,6 @@ export function createAudio(opts?: AudioOptions): Audio {
       return Promise.reject(new DOMException("Load aborted", "AbortError"));
     }
     return new Promise<Sound>((resolve, reject) => {
-      const howl = new Howl({ src: [url], preload: true });
       // First of load / loaderror / abort to fire wins; the rest are no-ops.
       // Without this guard a late Howler `load` — decode finishing AFTER an
       // abort already rejected — would still run the `once("load")` callback,
@@ -689,24 +688,39 @@ export function createAudio(opts?: AudioOptions): Audio {
           signal?.removeEventListener("abort", abortHandler);
         }
         // Detach BOTH lifecycle listeners. This Howl is freshly built here and
-        // not yet exposed, so the only listeners on it are the `load` /
-        // `loaderror` once-handlers above; a bare off() clears every Howler
+        // not yet exposed, so the only listeners on it are the `onload` /
+        // `onloaderror` handlers below; a bare off() clears every Howler
         // event on it (howler.js: off() with no event empties all `_on*`).
         howl.off();
       };
-      howl.once("load", () => {
+      const onload = (): void => {
         if (settled) return;
         cleanup();
         sound = new SoundImpl(howl, state);
         state.sounds.add(sound);
         resolve(sound);
-      });
-      howl.once("loaderror", (_id: number, errMsg: unknown) => {
+      };
+      const onloaderror = (_id: number, errMsg: unknown): void => {
         if (settled) return;
         cleanup();
         howl.unload();
         reject(new AudioError(`load failed: ${String(errMsg)}`));
-      });
+      };
+      // The handlers MUST go in the constructor options, not a later once():
+      // Howler can emit `load` / `loaderror` synchronously inside `new Howl()`
+      // (buffer-cache hit, no codec / no extension, Howler.noAudio), and its
+      // _emit only schedules listeners that already exist at emit time — a
+      // once() attached after the constructor returns never fires and the
+      // promise never settles. Howler invokes them via setTimeout, so `howl`
+      // is always assigned by the time they run.
+      let howl: Howl;
+      try {
+        howl = new Howl({ src: [url], preload: true, onload, onloaderror });
+      } catch (err) {
+        // e.g. a malformed base64 data URI makes Howler's atob() throw.
+        reject(new AudioError(`load failed: ${String(err)}`));
+        return;
+      }
       if (signal !== undefined) {
         abortHandler = (): void => {
           if (settled) return;

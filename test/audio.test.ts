@@ -64,18 +64,37 @@ vi.mock("howler", () => {
   // does (event-based, asynchronous, decoupled from when load() was called),
   // not on a fixed single microtask the abort happens to precede.
   let mockManualLoad = false;
+  // Sync-load mode: Howler emits `load` / `loaderror` INSIDE `new Howl()` on a
+  // buffer-cache hit, a missing / unsupported extension, or Howler.noAudio.
+  // Its _emit only schedules the listeners that exist AT EMIT TIME (a
+  // setTimeout per registered entry), so a listener attached after the
+  // constructor returns never fires. This mode snapshots the handler during
+  // construction to model exactly that.
+  let mockSyncLoad = false;
+
+  type HowlOpts = { src: string[]; preload?: boolean; onload?: AnyFn; onloaderror?: AnyFn };
 
   class Howl {
-    opts: { src: string[]; preload?: boolean };
+    opts: HowlOpts;
     // Howl-global default volume (the no-id volume() setter). Distinct from
     // each voice's per-id gain and from Howler.volume() (the master).
     _globalVolume = 1;
 
-    constructor(opts: { src: string[]; preload?: boolean }) {
+    constructor(opts: HowlOpts) {
       this.opts = opts;
       lastHowl = this;
       handlers.set(this, new Map());
       listeners.set(this, new Map());
+      // Howler's init() installs the `onload` / `onloaderror` constructor
+      // options as listeners BEFORE it calls load().
+      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
+      if (opts.onloaderror !== undefined) handlers.get(this)?.set("loaderror", opts.onloaderror);
+      if (mockSyncLoad) {
+        const event = mockShouldLoadFail ? "loaderror" : "load";
+        const cb = handlers.get(this)?.get(event);
+        setTimeout(() => cb?.(undefined, mockShouldLoadFail ? "mock error" : undefined), 0);
+        return;
+      }
       // Auto-fire load / loaderror on the next microtask — UNLESS a test opted
       // into manual-load mode to drive the decode-completion timing itself.
       if (mockManualLoad) return;
@@ -304,6 +323,11 @@ vi.mock("howler", () => {
     __setManualLoad: (v: boolean) => {
       mockManualLoad = v;
     },
+    // Test helper — toggle sync-load mode (Howler emitting inside the
+    // constructor, e.g. on a buffer-cache hit).
+    __setSyncLoad: (v: boolean) => {
+      mockSyncLoad = v;
+    },
     __resetSoundId: () => {
       nextSoundId = 1;
     },
@@ -324,6 +348,7 @@ import {
   __resetSoundId,
   __setManualLoad,
   __setMockLoadFail,
+  __setSyncLoad,
 } from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 
@@ -342,6 +367,10 @@ function resetSoundId(): void {
 
 function setManualLoad(v: boolean): void {
   (__setManualLoad as (v: boolean) => void)(v);
+}
+
+function setSyncLoad(v: boolean): void {
+  (__setSyncLoad as (v: boolean) => void)(v);
 }
 
 /** The Howl that load() constructed internally, with its late-emit helpers. */
@@ -366,6 +395,7 @@ function getMockCtx(): { state: string; resume: ReturnType<typeof vi.fn> } {
 beforeEach(() => {
   setLoadFail(false);
   setManualLoad(false);
+  setSyncLoad(false);
   resetSoundId();
   vi.clearAllMocks();
   // Re-seed resume mock after clearAllMocks.
@@ -375,6 +405,7 @@ beforeEach(() => {
 afterEach(() => {
   setLoadFail(false);
   setManualLoad(false);
+  setSyncLoad(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -632,6 +663,22 @@ describe("C. load", () => {
 
     audio.disposeAll();
     expect(unloadSpy.mock.calls.length).toBe(unloadAfterAbort);
+  });
+
+  it("C10. Howler emitting `load` synchronously inside `new Howl()` (cache hit) still resolves", async () => {
+    setSyncLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("cached.mp3");
+    expect(sound.disposed).toBe(false);
+    audio.dispose();
+  });
+
+  it("C11. Howler emitting `loaderror` synchronously inside `new Howl()` still rejects with AudioError", async () => {
+    setSyncLoad(true);
+    setLoadFail(true);
+    const audio = createAudio({ autoUnlock: false });
+    await expect(audio.load("clip.xyz")).rejects.toBeInstanceOf(AudioError);
+    audio.dispose();
   });
 });
 

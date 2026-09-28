@@ -45,7 +45,7 @@ vi.mock("howler", () => {
 
   class Howl {
     _sounds: Array<{ _id: number; _node: { gain: ReturnType<typeof makeMockGainParam> } }> = [];
-    opts: { src: string[]; preload?: boolean };
+    opts: { src: string[]; preload?: boolean; onload?: AnyFn };
     fade = vi.fn();
     volume = vi.fn();
     rate = vi.fn();
@@ -54,9 +54,11 @@ vi.mock("howler", () => {
     pause = vi.fn();
     unload = vi.fn();
 
-    constructor(opts: { src: string[]; preload?: boolean }) {
+    constructor(opts: { src: string[]; preload?: boolean; onload?: AnyFn }) {
       this.opts = opts;
       handlers.set(this, new Map());
+      // Howler's init() installs the `onload` constructor option as a listener.
+      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
       Promise.resolve().then(() => {
         const map = handlers.get(this);
         if (map === undefined) return;

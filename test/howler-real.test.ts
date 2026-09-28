@@ -1,0 +1,70 @@
+// aiaudiojs — regression suite against the REAL howler core.
+//
+// Environment: happy-dom. Every other test file vi.mock()s howler; this one
+// runs howler 2.2.4 itself over a stub AudioContext (see fake-web-audio.ts), so
+// it pins wrapper bugs that only show up with Howler's actual event timing,
+// buffer cache and play-lock queuing.
+
+import { Howler } from "howler";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AudioError, createAudio } from "../src/index.js";
+import {
+  WAV,
+  installFakeWebAudio,
+  quietHowler,
+  resetHowler,
+  settledWithin,
+} from "./fake-web-audio.js";
+
+let fake: ReturnType<typeof installFakeWebAudio> | undefined;
+
+afterEach(() => {
+  resetHowler(Howler);
+  fake?.restore();
+  fake = undefined;
+  vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// R1. load() when Howler emits load / loaderror inside `new Howl()`
+// ---------------------------------------------------------------------------
+
+describe("R1. load() with a synchronous Howler emit inside the constructor", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+  });
+
+  it("R1a. a second load() of the same URL (buffer-cache hit) still resolves", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const p1 = audio.load(WAV);
+    expect(await settledWithin(p1, 50)).toBe("resolved");
+    // Cache hit: loadSound -> _emit('load') runs INSIDE new Howl().
+    const p2 = audio.load(WAV);
+    const howls = (Howler as unknown as { _howls: Array<{ state: () => string }> })._howls;
+    expect(howls[howls.length - 1]?.state()).toBe("loaded");
+    expect(await settledWithin(p2, 5000)).toBe("resolved");
+    audio.disposeAll();
+  });
+
+  it("R1b. a URL without an extension ('No codec support', emitted synchronously) rejects with AudioError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const p = audio.load("/api/sound?id=5");
+    p.catch(() => {});
+    expect(warn).toHaveBeenCalled();
+    expect(await settledWithin(p, 5000)).toBe("rejected");
+    await expect(p).rejects.toBeInstanceOf(AudioError);
+    audio.disposeAll();
+  });
+
+  it("R1c. a malformed base64 data URI (new Howl throws) rejects with AudioError, not a raw DOMException", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const err = await audio.load("data:audio/wav;base64,@@@not-base64@@@").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AudioError);
+    audio.disposeAll();
+  });
+});
