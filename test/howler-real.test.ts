@@ -7,7 +7,7 @@
 
 import { Howler } from "howler";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AudioError, createAudio } from "../src/index.js";
+import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import {
   WAV,
   installFakeWebAudio,
@@ -87,5 +87,27 @@ describe("R2. unlock() without an AudioContext", () => {
     }).not.toThrow();
     await expect(p).resolves.toBeUndefined();
     audio.disposeAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3. disposeAll() racing an in-flight load()
+// ---------------------------------------------------------------------------
+
+describe("R3. disposeAll() racing an in-flight load()", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+  });
+
+  it("R3a. a load started before disposeAll() rejects with AudioDisposedError and unloads its Howl", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const p = audio.load(WAV); // decode in flight
+    p.catch(() => {});
+    audio.disposeAll();
+    expect(await settledWithin(p, 50)).toBe("rejected");
+    await expect(p).rejects.toBeInstanceOf(AudioDisposedError);
+    expect((Howler as unknown as { _howls: unknown[] })._howls).toHaveLength(0);
   });
 });

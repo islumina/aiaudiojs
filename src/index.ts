@@ -704,6 +704,13 @@ export function createAudio(opts?: AudioOptions): Audio {
       const onload = (): void => {
         if (settled) return;
         cleanup();
+        // disposeAll() ran while this decode was in flight: a Sound added now
+        // could never be reclaimed (every later disposeAll() is a no-op).
+        if (state.disposed) {
+          howl.unload();
+          reject(new AudioDisposedError("aiaudiojs: Audio has been disposed"));
+          return;
+        }
         sound = new SoundImpl(howl, state);
         state.sounds.add(sound);
         resolve(sound);

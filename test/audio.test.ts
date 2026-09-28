@@ -703,6 +703,19 @@ describe("C. load", () => {
     expect(unloadSpy.mock.calls.length).toBe(unloadAfterAbort);
   });
 
+  it("C12. disposeAll() while a load is in flight: the late `load` rejects AudioDisposedError and unloads the Howl", async () => {
+    setManualLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const promise = audio.load("test.mp3");
+    const howl = lastHowl();
+    const unloadSpy = vi.spyOn(howl, "unload");
+    audio.disposeAll();
+    // Howler's decode completes after the controller was torn down.
+    howl.__emitLoad();
+    await expect(promise).rejects.toBeInstanceOf(AudioDisposedError);
+    expect(unloadSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("C10. Howler emitting `load` synchronously inside `new Howl()` (cache hit) still resolves", async () => {
     setSyncLoad(true);
     const audio = createAudio({ autoUnlock: false });
