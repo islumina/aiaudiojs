@@ -210,3 +210,75 @@ describe("R6. play() with a single paused voice", () => {
     audio.disposeAll();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R9. resume() before the first gesture (play queued behind the context)
+// ---------------------------------------------------------------------------
+
+describe("R9. resume() while a play is queued behind a suspended context", () => {
+  let resumeNow: () => void;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // One shared deferred = one user gesture.
+    const gate = new Promise<void>((r) => {
+      resumeNow = () => {
+        if (fake !== undefined) fake.ctx().state = "running";
+        r();
+      };
+    });
+    fake = installFakeWebAudio("suspended", () => gate);
+  });
+
+  async function run(callResume: boolean) {
+    const f = fake as NonNullable<typeof fake>;
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const bgm = await loadFlushed(audio, WAV);
+    const id = bgm.play({ loop: true });
+    const v = voices(bgm).find((x) => x._id === id);
+    expect(v?._paused).toBe(true);
+    expect(v?._ended).toBe(false);
+    // The caller never paused anything.
+    const resumeReturned = callResume ? bgm.resume() : undefined;
+    const resumeIdReturned = callResume ? bgm.resume(id) : undefined;
+    resumeNow();
+    await vi.advanceTimersByTimeAsync(10);
+    const started = f.ctx().sources.filter((s) => s.start.mock.calls.length > 0);
+    bgm.stop(id);
+    const stoppedAll = started.every((s) => s.stop.mock.calls.length > 0);
+    audio.disposeAll();
+    return { resumeReturned, resumeIdReturned, started: started.length, stoppedAll };
+  }
+
+  it("R9a. control (no resume()): one buffer source starts and stop() silences it", async () => {
+    expect(await run(false)).toEqual({
+      resumeReturned: undefined,
+      resumeIdReturned: undefined,
+      started: 1,
+      stoppedAll: true,
+    });
+  });
+
+  it("R9b. resume() / resume(id) do not re-play a queued voice; one buffer source per voice", async () => {
+    expect(await run(true)).toEqual({
+      resumeReturned: -1,
+      resumeIdReturned: -1,
+      started: 1,
+      stoppedAll: true,
+    });
+  });
+
+  it("R9c. once the queued voice has started, a genuine pause + resume() resumes it", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const bgm = await loadFlushed(audio, WAV);
+    const id = bgm.play({ loop: true });
+    resumeNow();
+    await vi.advanceTimersByTimeAsync(10);
+    bgm.pause(id);
+    expect(bgm.resume()).toBe(id);
+    expect(active(bgm).map((v) => v._id)).toEqual([id]);
+    audio.disposeAll();
+  });
+});

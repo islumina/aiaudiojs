@@ -456,6 +456,12 @@ class SoundImpl implements Sound {
   // over) after the sound is unloaded. Howler emits no 'unload' event, so
   // unload() alone cannot trigger these — dispose() must invoke them.
   private readonly _abortCleanups = new Set<() => void>();
+  // Voice ids whose play() Howler deferred (Web Audio: context not running,
+  // queued behind once('resume'); HTML5: waiting on the media element). Such a
+  // voice reads `_paused === true` until Howler starts it, but it was never
+  // paused: replaying it from resume() would queue a SECOND start and orphan
+  // the first buffer source. Each id leaves the set on its Howler `play` event.
+  private readonly _pendingPlays = new Set<number>();
 
   constructor(
     private readonly howl: Howl,
@@ -483,6 +489,10 @@ class SoundImpl implements Sound {
     // `__default` sprite (which Howler always defines; load() adds no sprites)
     // skips that branch and still plays the full buffer.
     const id = this.howl.play("__default");
+    if ((this.howl as unknown as { _playLock?: boolean })._playLock === true) {
+      this._pendingPlays.add(id);
+      this.howl.once("play", () => this._pendingPlays.delete(id), id);
+    }
     // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
     // once via Howler's global gain (`Howler.volume`). Defaulting this to the
     // masterVolume would double-attenuate (Howler global × per-id default →
@@ -551,9 +561,12 @@ class SoundImpl implements Sound {
     // between the id-specific and no-arg paths (C9 / AUD-B-01). Howler marks
     // stopped / naturally-ended / never-played pooled voices `_paused === true`
     // AND `_ended === true`; replaying those restarts finished SFX from zero.
+    // A voice whose play() is still pending is not paused either (see
+    // `_pendingPlays`).
     let last = -1;
     for (const s of getSounds(this.howl)) {
       if (s._paused !== true || s._ended === true || s._id === undefined) continue;
+      if (this._pendingPlays.has(s._id)) continue;
       if (id !== undefined) {
         if (s._id !== id) continue;
         this.howl.play(id);
