@@ -303,12 +303,15 @@ vi.mock("howler", () => {
   }
 
   const mockCtx = { state: "suspended", resume: vi.fn().mockResolvedValue(undefined) };
+  // Real Howler leaves `ctx` null when Web Audio is unavailable (HTML5
+  // fallback, SSR, jsdom) — never undefined.
+  let mockCtxNull = false;
 
   return {
     Howl,
     Howler: {
       get ctx() {
-        return mockCtx;
+        return mockCtxNull ? null : mockCtx;
       },
       // Master volume sink — recorded so a test can compose per-id × master.
       volume: vi.fn(),
@@ -328,6 +331,10 @@ vi.mock("howler", () => {
     __setSyncLoad: (v: boolean) => {
       mockSyncLoad = v;
     },
+    // Test helper — model Howler with no AudioContext (`Howler.ctx === null`).
+    __setCtxNull: (v: boolean) => {
+      mockCtxNull = v;
+    },
     __resetSoundId: () => {
       nextSoundId = 1;
     },
@@ -346,6 +353,7 @@ import {
   __getMockCtx,
   __lastHowl,
   __resetSoundId,
+  __setCtxNull,
   __setManualLoad,
   __setMockLoadFail,
   __setSyncLoad,
@@ -373,6 +381,10 @@ function setSyncLoad(v: boolean): void {
   (__setSyncLoad as (v: boolean) => void)(v);
 }
 
+function setCtxNull(v: boolean): void {
+  (__setCtxNull as (v: boolean) => void)(v);
+}
+
 /** The Howl that load() constructed internally, with its late-emit helpers. */
 interface LateLoadHowl {
   __emitLoad(): void;
@@ -396,6 +408,7 @@ beforeEach(() => {
   setLoadFail(false);
   setManualLoad(false);
   setSyncLoad(false);
+  setCtxNull(false);
   resetSoundId();
   vi.clearAllMocks();
   // Re-seed resume mock after clearAllMocks.
@@ -406,6 +419,7 @@ afterEach(() => {
   setLoadFail(false);
   setManualLoad(false);
   setSyncLoad(false);
+  setCtxNull(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -528,6 +542,30 @@ describe("B. unlock", () => {
     const audio = createAudio({ autoUnlock: false });
     audio.dispose();
     await expect(audio.unlock()).rejects.toBeInstanceOf(AudioDisposedError);
+  });
+
+  it("B4. unlock() resolves without throwing when Howler.ctx is null (no Web Audio)", async () => {
+    setCtxNull(true);
+    const audio = createAudio({ autoUnlock: false });
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = audio.unlock();
+    }).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    audio.dispose();
+  });
+
+  it("B5. unlock() resolves when resume() throws synchronously (best-effort, never throws)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    getMockCtx().resume.mockImplementationOnce(() => {
+      throw new Error("resume unavailable");
+    });
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = audio.unlock();
+    }).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    audio.dispose();
   });
 });
 

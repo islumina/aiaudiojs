@@ -68,3 +68,24 @@ describe("R1. load() with a synchronous Howler emit inside the constructor", () 
     audio.disposeAll();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2. unlock() with no AudioContext (HTML5 fallback / SSR / jsdom)
+// ---------------------------------------------------------------------------
+
+describe("R2. unlock() without an AudioContext", () => {
+  it("R2a. resolves (never throws) when Howler.ctx is null", async () => {
+    expect(typeof (globalThis as Record<string, unknown>).AudioContext).toBe("undefined");
+    const audio = createAudio({ autoUnlock: false });
+    const H = Howler as unknown as { ctx: unknown; usingWebAudio: boolean };
+    // Real Howler models "no context" as null, never undefined.
+    expect(H.ctx).toBeNull();
+    expect(H.usingWebAudio).toBe(false);
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = audio.unlock();
+    }).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    audio.disposeAll();
+  });
+});

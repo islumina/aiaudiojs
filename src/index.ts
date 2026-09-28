@@ -657,8 +657,16 @@ export function createAudio(opts?: AudioOptions): Audio {
   function unlock(): Promise<void> {
     if (state.disposed)
       return Promise.reject(new AudioDisposedError("aiaudiojs: Audio has been disposed"));
-    if (Howler.ctx === undefined) return Promise.resolve();
-    return Howler.ctx.resume().catch(noop);
+    // Real Howler models "no AudioContext" (HTML5 fallback, SSR, jsdom) as
+    // `null`, never `undefined`, so compare loosely. Best-effort: a resume()
+    // that throws synchronously resolves too, like one that rejects.
+    const ctx = Howler.ctx;
+    if (ctx == null) return Promise.resolve();
+    try {
+      return ctx.resume().catch(noop);
+    } catch {
+      return Promise.resolve();
+    }
   }
 
   function load(url: string, signal?: AbortSignal): Promise<Sound> {
@@ -762,7 +770,8 @@ export function createAudio(opts?: AudioOptions): Audio {
 
   function crossfadeEqualPower(from: Sound, to: Sound, cfOpts: CrossfadeOptions): Promise<void> {
     const ctx = Howler.ctx;
-    if (ctx === undefined) {
+    // `null` is Howler's "no AudioContext" value (see unlock()).
+    if (ctx == null) {
       throw new AudioError("equal-power crossfade requires Web Audio mode; HTML5 fallback active");
     }
     // `from` is assumed to be already playing (crossfade contract); only the

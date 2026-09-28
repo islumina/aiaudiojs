@@ -3,7 +3,7 @@
 // Environment: happy-dom (provides AbortSignal, DOMException).
 // Howler is mocked in this file with an extended mock that exposes
 // _sounds (with per-sound _node.gain AudioParam), __setHtml5Mode,
-// __resetSoundId, __getMockCtx, and __forceCtxUndefined helpers.
+// __resetSoundId, __getMockCtx, and __forceCtxNull helpers.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,7 +17,7 @@ vi.mock("howler", () => {
   const handlers = new Map<object, Map<string, AnyFn>>();
   let nextSoundId = 1;
   let mockHtml5Mode = false;
-  let forceCtxUndefined = false;
+  let forceCtxNull = false;
 
   function makeMockGainParam() {
     return {
@@ -104,22 +104,23 @@ vi.mock("howler", () => {
     return mockCtx;
   }
 
-  function __forceCtxUndefined(v: boolean): void {
-    forceCtxUndefined = v;
+  function __forceCtxNull(v: boolean): void {
+    forceCtxNull = v;
   }
 
   return {
     Howl,
     Howler: {
       get ctx() {
-        return forceCtxUndefined ? undefined : mockCtx;
+        // Real Howler models "no AudioContext" as null, never undefined.
+        return forceCtxNull ? null : mockCtx;
       },
       volume: vi.fn(),
     },
     __setHtml5Mode,
     __resetSoundId,
     __getMockCtx,
-    __forceCtxUndefined,
+    __forceCtxNull,
   };
 });
 
@@ -127,7 +128,7 @@ vi.mock("howler", () => {
 // Imports (after vi.mock hoisting)
 // ---------------------------------------------------------------------------
 
-import { Howler, __forceCtxUndefined, __getMockCtx, __resetSoundId, __setHtml5Mode } from "howler";
+import { Howler, __forceCtxNull, __getMockCtx, __resetSoundId, __setHtml5Mode } from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -146,8 +147,8 @@ function getMockCtx(): ReturnType<typeof __getMockCtx> {
   return (__getMockCtx as () => ReturnType<typeof __getMockCtx>)();
 }
 
-function forceCtxUndefined(v: boolean): void {
-  (__forceCtxUndefined as (v: boolean) => void)(v);
+function forceCtxNull(v: boolean): void {
+  (__forceCtxNull as (v: boolean) => void)(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +182,7 @@ function getFirstGain(sound: { nativeHowl: { _sounds: Array<{ _node?: { gain?: G
 
 beforeEach(() => {
   setHtml5Mode(false);
-  forceCtxUndefined(false);
+  forceCtxNull(false);
   resetSoundId();
   vi.clearAllMocks();
   getMockCtx().currentTime = 0;
@@ -190,7 +191,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setHtml5Mode(false);
-  forceCtxUndefined(false);
+  forceCtxNull(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -576,8 +577,8 @@ describe("E. HTML5 fallback", () => {
     audio.dispose();
   });
 
-  it("E2: when Howler.ctx is undefined, equal-power throws AudioError with exact message", async () => {
-    forceCtxUndefined(true);
+  it("E2: when Howler.ctx is null (no Web Audio), equal-power throws AudioError with exact message", async () => {
+    forceCtxNull(true);
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
     let err: unknown;
@@ -590,7 +591,7 @@ describe("E. HTML5 fallback", () => {
     expect((err as AudioError).message).toBe(
       "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
     );
-    forceCtxUndefined(false);
+    forceCtxNull(false);
     audio.dispose();
   });
 });
