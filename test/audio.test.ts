@@ -555,6 +555,18 @@ describe("A. createAudio / lifecycle", () => {
     audio.dispose();
   });
 
+  it("A8c. autoUnlock detaches immediately (without calling resume) when Howler has no AudioContext", () => {
+    setCtxNull(true);
+    const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
+    document.dispatchEvent(new Event("pointerup"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    // Listeners must have detached: a second gesture calls nothing further
+    // (no observable effect, but this pins that the handler ran once).
+    document.dispatchEvent(new Event("pointerup"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    audio.dispose();
+  });
+
   it("A9. visibilitychange when hidden does NOT call resume", () => {
     const audio = createAudio({ autoUnlock: false, resumeOnVisibility: true });
     // Simulate the page being hidden (e.g. user switches tab or backgrounds the app).
