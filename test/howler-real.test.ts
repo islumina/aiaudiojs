@@ -11,6 +11,7 @@ import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import {
   WAV,
   WAV2,
+  active,
   installFakeWebAudio,
   loadFlushed,
   quietHowler,
@@ -150,6 +151,62 @@ describe("R5. equal-power crossfade while the AudioContext is suspended", () => 
     expect((err as AudioError).message).not.toContain("HTML5 fallback");
     // Nothing was queued on `to`.
     expect(voices(to).every((v) => v._ended)).toBe(true);
+    audio.disposeAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R6. play() with a single paused voice
+// ---------------------------------------------------------------------------
+
+describe("R6. play() with a single paused voice", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+  });
+
+  it("R6a. play() starts a NEW voice and leaves the paused one untouched", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const bgm = await loadFlushed(audio, WAV);
+    const a = bgm.play({ loop: true, volume: 0.3 });
+    await vi.advanceTimersByTimeAsync(1);
+    bgm.pause(a);
+    const va = voices(bgm).find((v) => v._id === a);
+    expect(va).toMatchObject({ _paused: true, _ended: false, _loop: true, _volume: 0.3 });
+    const b = bgm.play();
+    expect({
+      newVoice: b !== a,
+      voiceCount: voices(bgm).length,
+      aStillPaused: va?._paused,
+      aLoop: va?._loop,
+      aVolume: va?._volume,
+      resumeA: bgm.resume(a),
+    }).toEqual({
+      newVoice: true,
+      voiceCount: 2,
+      aStillPaused: true,
+      aLoop: true,
+      aVolume: 0.3,
+      resumeA: a,
+    });
+    audio.disposeAll();
+  });
+
+  it("R6b. a linear crossfade into a Sound with one paused voice starts a fresh voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const other = await loadFlushed(audio, WAV);
+    const menu = await loadFlushed(audio, WAV2);
+    other.play({ loop: true });
+    const m = menu.play({ loop: true });
+    await vi.advanceTimersByTimeAsync(1);
+    menu.pause(m);
+    const vm = voices(menu).find((v) => v._id === m);
+    audio.crossfade(other, menu, { duration: 1 }).catch(() => {});
+    expect(vm).toMatchObject({ _paused: true, _loop: true });
+    expect(active(menu)).toHaveLength(1);
+    expect(active(menu)[0]?._id).not.toBe(m);
     audio.disposeAll();
   });
 });

@@ -225,7 +225,15 @@ vi.mock("howler", () => {
 
     _sounds: MockVoice[] = [];
 
-    play(id?: number): number {
+    play(spriteOrId?: number | string): number {
+      let id = typeof spriteOrId === "number" ? spriteOrId : undefined;
+      if (spriteOrId === undefined) {
+        // Howler: a bare play() with EXACTLY ONE paused, not-ended voice
+        // resumes that voice instead of starting a new one. A named sprite
+        // (e.g. "__default") skips this branch.
+        const paused = this._sounds.filter((v) => v._paused && !v._ended);
+        if (paused.length === 1) id = paused[0]?._id;
+      }
       if (id !== undefined) {
         // Resume a specific voice: Howler clears paused AND ended on replay.
         const s = this._sounds.find((v) => v._id === id);
@@ -860,6 +868,39 @@ describe("D. Sound.play / pause / stop", () => {
     ctrl.abort();
     expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
 
+    audio.dispose();
+  });
+
+  it("D12. play() with exactly one paused voice starts a NEW voice and leaves the paused one untouched", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const bgm = await audio.load("bgm.mp3");
+    const howl = bgm.nativeHowl as unknown as { _sounds: MockVoice[] };
+    const a = bgm.play({ loop: true, volume: 0.3 });
+    bgm.pause(a);
+    const b = bgm.play();
+    expect(b).not.toBe(a);
+    expect(howl._sounds).toHaveLength(2);
+    expect(howl._sounds.find((v) => v._id === a)).toMatchObject({
+      _paused: true,
+      _ended: false,
+      _loop: true,
+      _volume: 0.3,
+    });
+    expect(bgm.resume(a)).toBe(a);
+    audio.dispose();
+  });
+
+  it("D13. linear crossfade into a Sound with one paused voice starts a fresh incoming voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const other = await audio.load("other.mp3");
+    const menu = await audio.load("menu.mp3");
+    const howl = menu.nativeHowl as unknown as { _sounds: MockVoice[] };
+    other.play({ loop: true });
+    const m = menu.play({ loop: true });
+    menu.pause(m);
+    audio.crossfade(other, menu, { duration: 1 }).catch(() => {});
+    expect(howl._sounds.find((v) => v._id === m)).toMatchObject({ _paused: true, _loop: true });
+    expect(howl._sounds.filter((v) => !v._paused)).toHaveLength(1);
     audio.dispose();
   });
 

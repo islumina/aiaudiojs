@@ -477,7 +477,12 @@ class SoundImpl implements Sound {
   play(opts?: PlayOptions): number {
     this.ck();
     const looping = opts?.loop ?? false;
-    const id = this.howl.play();
+    // Always start a NEW voice. A bare Howl.play() resumes the single paused,
+    // not-ended voice when exactly one exists, and the per-id setters below
+    // would then clobber that voice's volume / rate / loop. Naming the
+    // `__default` sprite (which Howler always defines; load() adds no sprites)
+    // skips that branch and still plays the full buffer.
+    const id = this.howl.play("__default");
     // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
     // once via Howler's global gain (`Howler.volume`). Defaulting this to the
     // masterVolume would double-attenuate (Howler global × per-id default →
