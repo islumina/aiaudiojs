@@ -17,10 +17,10 @@ import { Howl, Howler } from "howler";
  */
 export interface AudioOptions {
   /**
-   * If true (default), the first user gesture (touchstart / mousedown /
+   * If true (default), the first user gesture (touchend / pointerup /
    * keydown) on the page calls `Howler.ctx.resume()` and detaches the
-   * listeners. Set false if you want to wire the unlock manually via
-   * {@link Audio.unlock}.
+   * listeners once the context is actually running. Set false if you want
+   * to wire the unlock manually via {@link Audio.unlock}.
    */
   autoUnlock?: boolean;
 
@@ -667,15 +667,29 @@ export function createAudio(opts?: AudioOptions): Audio {
     if (state.disposed) throw new AudioDisposedError("aiaudiojs: Audio has been disposed");
   }
 
-  // Wire up autoUnlock.
+  // Wire up autoUnlock. Listen only on events the HTML spec treats as
+  // "activation-triggering" (touchend, pointerup, keydown) — `touchstart` is
+  // NOT one, so `ctx.resume()` from it is refused by the browser's autoplay
+  // policy. Detach only once resume() actually leaves the context running:
+  // an activation event whose resume() gets refused (or fails) keeps the
+  // listeners attached so the next gesture can retry.
   if (state.autoUnlock && typeof document !== "undefined") {
-    const unlockEvents = ["touchstart", "mousedown", "keydown"];
-    const handler = (): void => {
+    const unlockEvents = ["touchend", "pointerup", "keydown"];
+    const detach = (): void => {
       for (const ev of unlockEvents) {
         document.removeEventListener(ev, handler);
       }
       state.unlockHandlers = undefined;
-      Howler.ctx?.resume().catch(noop);
+    };
+    const handler = (): void => {
+      const ctx = Howler.ctx;
+      if (ctx == null) {
+        detach();
+        return;
+      }
+      ctx.resume().then(() => {
+        if (ctx.state === "running") detach();
+      }, noop);
     };
     for (const ev of unlockEvents) {
       document.addEventListener(ev, handler, { once: false });

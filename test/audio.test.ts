@@ -432,6 +432,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Re-seed resume mock after clearAllMocks.
   getMockCtx().resume.mockResolvedValue(undefined);
+  getMockCtx().state = "suspended";
 });
 
 afterEach(() => {
@@ -517,12 +518,40 @@ describe("A. createAudio / lifecycle", () => {
     audio.dispose();
   });
 
-  it("A8. autoUnlock handler fires on user gesture and detaches all listeners", () => {
+  it("A8. autoUnlock handler fires on an activation-triggering gesture", () => {
     const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
-    // Fire a mousedown — the one-shot handler removes all three unlock listeners.
-    document.dispatchEvent(new MouseEvent("mousedown"));
-    // resume should have been called by the unlock handler.
+    // touchstart is NOT an activation-triggering event per the HTML spec
+    // (autoplay policies refuse resume() from it); the handler must not be
+    // listening on it. pointerup is.
+    document.dispatchEvent(new Event("touchstart"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    document.dispatchEvent(new Event("pointerup"));
     expect(getMockCtx().resume).toHaveBeenCalled();
+    audio.dispose();
+  });
+
+  it("A8b. autoUnlock detaches its listeners once resume() leaves the context running, and keeps retrying otherwise", async () => {
+    const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
+    // resume() resolves but the context is still not running (e.g. refused
+    // by the browser's autoplay policy) — the listeners must stay attached
+    // so the next gesture can retry.
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(2);
+
+    // Now resume() actually leaves the context running — the handler must
+    // detach so a further gesture does not call resume() again.
+    getMockCtx().resume.mockImplementationOnce(() => {
+      getMockCtx().state = "running";
+      return Promise.resolve();
+    });
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(3);
+    await Promise.resolve();
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(3);
     audio.dispose();
   });
 
