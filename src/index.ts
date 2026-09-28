@@ -788,6 +788,17 @@ export function createAudio(opts?: AudioOptions): Audio {
     if (ctx == null) {
       throw new AudioError("equal-power crossfade requires Web Audio mode; HTML5 fallback active");
     }
+    // Web Audio mode, but the context is not running (no gesture yet, iOS
+    // "interrupted", Howler's auto-suspend): Howler would defer `to`'s start
+    // behind once('resume') and leave its voice `_paused`, so there is nothing
+    // to ramp yet. Mirrors Howl.play()'s own gate; checked before any voice
+    // is started, so nothing is queued or orphaned.
+    const howlerState = (Howler as unknown as { state?: string }).state;
+    if (howlerState !== "running" || (ctx.state as string) === "interrupted") {
+      throw new AudioError(
+        "equal-power crossfade requires a running AudioContext; call unlock() first",
+      );
+    }
     // `from` is assumed to be already playing (crossfade contract); only the
     // incoming `to` is started here. Both fades are scheduled DIRECTLY on
     // Howler's per-sound GainNode (`_node.gain`) via setValueCurveAtTime —

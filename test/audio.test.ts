@@ -315,6 +315,9 @@ vi.mock("howler", () => {
       },
       // Master volume sink — recorded so a test can compose per-id × master.
       volume: vi.fn(),
+      // Howler's own running/suspended tracking (distinct from ctx.state);
+      // Howl.play() only starts Web Audio playback while it is "running".
+      state: "running",
     },
     // Test helpers — allow individual tests to switch load-fail mode.
     __setMockLoadFail: (v: boolean) => {

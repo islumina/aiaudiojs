@@ -10,10 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import {
   WAV,
+  WAV2,
   installFakeWebAudio,
+  loadFlushed,
   quietHowler,
   resetHowler,
   settledWithin,
+  voices,
 } from "./fake-web-audio.js";
 
 let fake: ReturnType<typeof installFakeWebAudio> | undefined;
@@ -109,5 +112,44 @@ describe("R3. disposeAll() racing an in-flight load()", () => {
     expect(await settledWithin(p, 50)).toBe("rejected");
     await expect(p).rejects.toBeInstanceOf(AudioDisposedError);
     expect((Howler as unknown as { _howls: unknown[] })._howls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R5. equal-power crossfade while the AudioContext is not running
+// ---------------------------------------------------------------------------
+
+describe("R5. equal-power crossfade while the AudioContext is suspended", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // resume() never settles: no user gesture has arrived yet.
+    fake = installFakeWebAudio("suspended", () => new Promise<void>(() => {}));
+  });
+
+  it("R5a. throws an AudioError that does not blame the HTML5 fallback, and starts no voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const H = Howler as unknown as { state: string; usingWebAudio: boolean };
+    expect(H.usingWebAudio).toBe(true);
+    expect(H.state).toBe("suspended");
+    const from = await loadFlushed(audio, WAV);
+    const to = await loadFlushed(audio, WAV2);
+    expect((from.nativeHowl as unknown as { _webAudio: boolean })._webAudio).toBe(true);
+    const fromId = from.play({ loop: true });
+    const fv = voices(from).find((v) => v._id === fromId);
+    // Queued behind once('resume'): paused but not ended.
+    expect(fv?._paused).toBe(true);
+    expect(fv?._ended).toBe(false);
+    let err: unknown;
+    try {
+      audio.crossfade(from, to, { duration: 1, curve: "equal-power" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(AudioError);
+    expect((err as AudioError).message).not.toContain("HTML5 fallback");
+    // Nothing was queued on `to`.
+    expect(voices(to).every((v) => v._ended)).toBe(true);
+    audio.disposeAll();
   });
 });

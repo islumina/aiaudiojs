@@ -116,6 +116,9 @@ vi.mock("howler", () => {
         return forceCtxNull ? null : mockCtx;
       },
       volume: vi.fn(),
+      // Howler's own running/suspended tracking (distinct from ctx.state);
+      // Howl.play() only starts Web Audio playback while it is "running".
+      state: "running",
     },
     __setHtml5Mode,
     __resetSoundId,
@@ -186,6 +189,8 @@ beforeEach(() => {
   resetSoundId();
   vi.clearAllMocks();
   getMockCtx().currentTime = 0;
+  getMockCtx().state = "running";
+  (Howler as unknown as { state: string }).state = "running";
   getMockCtx().resume.mockResolvedValue(undefined);
 });
 
@@ -629,6 +634,34 @@ describe("E. HTML5 fallback", () => {
       "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
     );
     forceCtxNull(false);
+    audio.dispose();
+  });
+
+  it("E3: Web Audio mode with a non-running context throws a distinct AudioError (not the HTML5 one) before starting `to`", async () => {
+    const H = Howler as unknown as { state: string };
+    const { audio, from, to } = await makeAudioWithSounds();
+    from.play();
+    const toPlaySpy = vi.spyOn(to.nativeHowl, "play");
+    for (const [howlerState, ctxState] of [
+      ["suspended", "suspended"],
+      ["running", "interrupted"],
+    ] as const) {
+      H.state = howlerState;
+      getMockCtx().state = ctxState;
+      let err: unknown;
+      try {
+        audio.crossfade(from, to, { duration: 2, curve: "equal-power" });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(AudioError);
+      expect((err as AudioError).message).toBe(
+        "equal-power crossfade requires a running AudioContext; call unlock() first",
+      );
+    }
+    expect(toPlaySpy).not.toHaveBeenCalled();
+    H.state = "running";
+    getMockCtx().state = "running";
     audio.dispose();
   });
 });

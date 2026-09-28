@@ -103,6 +103,9 @@ vi.mock("howler", () => {
         return mockCtx;
       },
       volume: vi.fn(),
+      // Howler's own running/suspended tracking (distinct from ctx.state);
+      // Howl.play() only starts Web Audio playback while it is "running".
+      state: "running",
     },
     __resetSoundId,
     __getMockCtx,
