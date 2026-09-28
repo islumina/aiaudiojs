@@ -299,12 +299,20 @@ vi.mock("howler", () => {
 
     rate(_r: number, _id?: number): void {}
 
-    loop(l?: boolean, id?: number): void {
-      if (l === undefined) return;
+    loop(lOrId?: boolean | number, id?: number): boolean | undefined {
+      // Real Howler overloads: loop(id) -> boolean (getter); loop(loop, id)
+      // -> this (setter). Support both so wrapper code can read the LIVE
+      // per-id loop flag, not just write it.
+      if (typeof lOrId === "number") {
+        const s = this._sounds.find((v) => v._id === lOrId);
+        return s?._loop ?? false;
+      }
+      if (lOrId === undefined) return undefined;
       if (id !== undefined) {
         const s = this._sounds.find((v) => v._id === id);
-        if (s !== undefined) s._loop = l;
+        if (s !== undefined) s._loop = lOrId;
       }
+      return undefined;
     }
 
     unload(): void {}
@@ -862,6 +870,68 @@ describe("D. Sound.play / pause / stop", () => {
     const id = sound.play({ loop: false, signal: ctrl.signal });
 
     (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D11a. play({ signal }) — a loop flag flipped to true via nativeHowl AFTER play() keeps the abort wiring alive past the first `end`", async () => {
+    // aiaudiojs-12: onEnd must read the LIVE loop flag (howl.loop(id)), not
+    // the `looping` value captured when play() was called.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const id = sound.play({ loop: false, signal: ctrl.signal });
+    sound.nativeHowl.loop(true, id);
+
+    // Loop boundary `end` must NOT tear down the abort wiring now that the
+    // voice is actually looping.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    ctrl.abort();
+    expect(stopSpy).toHaveBeenCalledWith(id);
+
+    audio.dispose();
+  });
+
+  it("D11b. play({ loop: true, signal }) — a loop flag flipped to false via nativeHowl lets the next `end` tear down the abort wiring", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ loop: true, signal: ctrl.signal });
+    sound.nativeHowl.loop(false, id);
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D11c. play({ signal }) — a per-id `playerror` tears down the abort wiring (HTML5 autoplay rejection)", async () => {
+    // aiaudiojs-12: HTML5 fallback emits only `playerror` (never end/stop)
+    // when the browser rejects an autoplay `node.play()`.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ signal: ctrl.signal });
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit(
+      "playerror",
+      id,
+    );
 
     expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
     const stopCallsBefore = stopSpy.mock.calls.length;

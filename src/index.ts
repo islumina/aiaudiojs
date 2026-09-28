@@ -523,6 +523,7 @@ class SoundImpl implements Sound {
           }
           howl.off("end", onEnd, id);
           howl.off("stop", onStop, id);
+          howl.off("playerror", onPlayError, id);
           this._abortCleanups.delete(cleanup);
         };
 
@@ -530,11 +531,19 @@ class SoundImpl implements Sound {
         // LOOPING voice, Howler fires `end` at every loop boundary while
         // playback continues, so cleanup there would tear down the abort
         // wiring mid-playback (AUD-R-01); only a non-loop `end` terminates the
-        // voice. `stop` always terminates, looping or not.
+        // voice. `stop` always terminates, looping or not. Read the LIVE loop
+        // flag (`howl.loop(id)`) rather than the `looping` value captured at
+        // play() time: a loop flag flipped later via `nativeHowl` would
+        // otherwise make this decision stale in either direction.
         const onEnd = (_id: number): void => {
-          if (!looping) cleanup();
+          if (!howl.loop(id)) cleanup();
         };
         const onStop = (_id: number): void => cleanup();
+        // HTML5 fallback: a rejected `node.play()` (e.g. autoplay policy)
+        // emits only `playerror`, never `end`/`stop`, so without this the
+        // abort wiring (and this Howl, via its closure) would be retained
+        // indefinitely.
+        const onPlayError = (_id: number): void => cleanup();
 
         onAbort = (): void => {
           howl.stop(id);
@@ -544,6 +553,7 @@ class SoundImpl implements Sound {
         signal.addEventListener("abort", onAbort, { once: true });
         howl.on("end", onEnd, id);
         howl.on("stop", onStop, id);
+        howl.on("playerror", onPlayError, id);
         this._abortCleanups.add(cleanup);
       }
     }
