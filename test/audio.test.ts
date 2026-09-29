@@ -64,18 +64,37 @@ vi.mock("howler", () => {
   // does (event-based, asynchronous, decoupled from when load() was called),
   // not on a fixed single microtask the abort happens to precede.
   let mockManualLoad = false;
+  // Sync-load mode: Howler emits `load` / `loaderror` INSIDE `new Howl()` on a
+  // buffer-cache hit, a missing / unsupported extension, or Howler.noAudio.
+  // Its _emit only schedules the listeners that exist AT EMIT TIME (a
+  // setTimeout per registered entry), so a listener attached after the
+  // constructor returns never fires. This mode snapshots the handler during
+  // construction to model exactly that.
+  let mockSyncLoad = false;
+
+  type HowlOpts = { src: string[]; preload?: boolean; onload?: AnyFn; onloaderror?: AnyFn };
 
   class Howl {
-    opts: { src: string[]; preload?: boolean };
+    opts: HowlOpts;
     // Howl-global default volume (the no-id volume() setter). Distinct from
     // each voice's per-id gain and from Howler.volume() (the master).
     _globalVolume = 1;
 
-    constructor(opts: { src: string[]; preload?: boolean }) {
+    constructor(opts: HowlOpts) {
       this.opts = opts;
       lastHowl = this;
       handlers.set(this, new Map());
       listeners.set(this, new Map());
+      // Howler's init() installs the `onload` / `onloaderror` constructor
+      // options as listeners BEFORE it calls load().
+      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
+      if (opts.onloaderror !== undefined) handlers.get(this)?.set("loaderror", opts.onloaderror);
+      if (mockSyncLoad) {
+        const event = mockShouldLoadFail ? "loaderror" : "load";
+        const cb = handlers.get(this)?.get(event);
+        setTimeout(() => cb?.(undefined, mockShouldLoadFail ? "mock error" : undefined), 0);
+        return;
+      }
       // Auto-fire load / loaderror on the next microtask — UNLESS a test opted
       // into manual-load mode to drive the decode-completion timing itself.
       if (mockManualLoad) return;
@@ -206,7 +225,15 @@ vi.mock("howler", () => {
 
     _sounds: MockVoice[] = [];
 
-    play(id?: number): number {
+    play(spriteOrId?: number | string): number {
+      let id = typeof spriteOrId === "number" ? spriteOrId : undefined;
+      if (spriteOrId === undefined) {
+        // Howler: a bare play() with EXACTLY ONE paused, not-ended voice
+        // resumes that voice instead of starting a new one. A named sprite
+        // (e.g. "__default") skips this branch.
+        const paused = this._sounds.filter((v) => v._paused && !v._ended);
+        if (paused.length === 1) id = paused[0]?._id;
+      }
       if (id !== undefined) {
         // Resume a specific voice: Howler clears paused AND ended on replay.
         const s = this._sounds.find((v) => v._id === id);
@@ -272,27 +299,41 @@ vi.mock("howler", () => {
 
     rate(_r: number, _id?: number): void {}
 
-    loop(l?: boolean, id?: number): void {
-      if (l === undefined) return;
+    loop(lOrId?: boolean | number, id?: number): boolean | undefined {
+      // Real Howler overloads: loop(id) -> boolean (getter); loop(loop, id)
+      // -> this (setter). Support both so wrapper code can read the LIVE
+      // per-id loop flag, not just write it.
+      if (typeof lOrId === "number") {
+        const s = this._sounds.find((v) => v._id === lOrId);
+        return s?._loop ?? false;
+      }
+      if (lOrId === undefined) return undefined;
       if (id !== undefined) {
         const s = this._sounds.find((v) => v._id === id);
-        if (s !== undefined) s._loop = l;
+        if (s !== undefined) s._loop = lOrId;
       }
+      return undefined;
     }
 
     unload(): void {}
   }
 
   const mockCtx = { state: "suspended", resume: vi.fn().mockResolvedValue(undefined) };
+  // Real Howler leaves `ctx` null when Web Audio is unavailable (HTML5
+  // fallback, SSR, jsdom) — never undefined.
+  let mockCtxNull = false;
 
   return {
     Howl,
     Howler: {
       get ctx() {
-        return mockCtx;
+        return mockCtxNull ? null : mockCtx;
       },
       // Master volume sink — recorded so a test can compose per-id × master.
       volume: vi.fn(),
+      // Howler's own running/suspended tracking (distinct from ctx.state);
+      // Howl.play() only starts Web Audio playback while it is "running".
+      state: "running",
     },
     // Test helpers — allow individual tests to switch load-fail mode.
     __setMockLoadFail: (v: boolean) => {
@@ -303,6 +344,15 @@ vi.mock("howler", () => {
     // single-microtask fire. Needed to reproduce the post-abort late-load race.
     __setManualLoad: (v: boolean) => {
       mockManualLoad = v;
+    },
+    // Test helper — toggle sync-load mode (Howler emitting inside the
+    // constructor, e.g. on a buffer-cache hit).
+    __setSyncLoad: (v: boolean) => {
+      mockSyncLoad = v;
+    },
+    // Test helper — model Howler with no AudioContext (`Howler.ctx === null`).
+    __setCtxNull: (v: boolean) => {
+      mockCtxNull = v;
     },
     __resetSoundId: () => {
       nextSoundId = 1;
@@ -322,8 +372,10 @@ import {
   __getMockCtx,
   __lastHowl,
   __resetSoundId,
+  __setCtxNull,
   __setManualLoad,
   __setMockLoadFail,
+  __setSyncLoad,
 } from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 
@@ -342,6 +394,14 @@ function resetSoundId(): void {
 
 function setManualLoad(v: boolean): void {
   (__setManualLoad as (v: boolean) => void)(v);
+}
+
+function setSyncLoad(v: boolean): void {
+  (__setSyncLoad as (v: boolean) => void)(v);
+}
+
+function setCtxNull(v: boolean): void {
+  (__setCtxNull as (v: boolean) => void)(v);
 }
 
 /** The Howl that load() constructed internally, with its late-emit helpers. */
@@ -366,15 +426,20 @@ function getMockCtx(): { state: string; resume: ReturnType<typeof vi.fn> } {
 beforeEach(() => {
   setLoadFail(false);
   setManualLoad(false);
+  setSyncLoad(false);
+  setCtxNull(false);
   resetSoundId();
   vi.clearAllMocks();
   // Re-seed resume mock after clearAllMocks.
   getMockCtx().resume.mockResolvedValue(undefined);
+  getMockCtx().state = "suspended";
 });
 
 afterEach(() => {
   setLoadFail(false);
   setManualLoad(false);
+  setSyncLoad(false);
+  setCtxNull(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -453,12 +518,52 @@ describe("A. createAudio / lifecycle", () => {
     audio.dispose();
   });
 
-  it("A8. autoUnlock handler fires on user gesture and detaches all listeners", () => {
+  it("A8. autoUnlock handler fires on an activation-triggering gesture", () => {
     const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
-    // Fire a mousedown — the one-shot handler removes all three unlock listeners.
-    document.dispatchEvent(new MouseEvent("mousedown"));
-    // resume should have been called by the unlock handler.
+    // touchstart is NOT an activation-triggering event per the HTML spec
+    // (autoplay policies refuse resume() from it); the handler must not be
+    // listening on it. pointerup is.
+    document.dispatchEvent(new Event("touchstart"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    document.dispatchEvent(new Event("pointerup"));
     expect(getMockCtx().resume).toHaveBeenCalled();
+    audio.dispose();
+  });
+
+  it("A8b. autoUnlock detaches its listeners once resume() leaves the context running, and keeps retrying otherwise", async () => {
+    const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
+    // resume() resolves but the context is still not running (e.g. refused
+    // by the browser's autoplay policy) — the listeners must stay attached
+    // so the next gesture can retry.
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(2);
+
+    // Now resume() actually leaves the context running — the handler must
+    // detach so a further gesture does not call resume() again.
+    getMockCtx().resume.mockImplementationOnce(() => {
+      getMockCtx().state = "running";
+      return Promise.resolve();
+    });
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(3);
+    await Promise.resolve();
+    document.dispatchEvent(new Event("keydown"));
+    expect(getMockCtx().resume).toHaveBeenCalledTimes(3);
+    audio.dispose();
+  });
+
+  it("A8c. autoUnlock detaches immediately (without calling resume) when Howler has no AudioContext", () => {
+    setCtxNull(true);
+    const audio = createAudio({ autoUnlock: true, resumeOnVisibility: false });
+    document.dispatchEvent(new Event("pointerup"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
+    // Listeners must have detached: a second gesture calls nothing further
+    // (no observable effect, but this pins that the handler ran once).
+    document.dispatchEvent(new Event("pointerup"));
+    expect(getMockCtx().resume).not.toHaveBeenCalled();
     audio.dispose();
   });
 
@@ -493,10 +598,34 @@ describe("B. unlock", () => {
     audio.dispose();
   });
 
-  it("B3. unlock after dispose throws AudioDisposedError", async () => {
+  it("B3. unlock after dispose rejects with AudioDisposedError", async () => {
     const audio = createAudio({ autoUnlock: false });
     audio.dispose();
     await expect(audio.unlock()).rejects.toBeInstanceOf(AudioDisposedError);
+  });
+
+  it("B4. unlock() resolves without throwing when Howler.ctx is null (no Web Audio)", async () => {
+    setCtxNull(true);
+    const audio = createAudio({ autoUnlock: false });
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = audio.unlock();
+    }).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    audio.dispose();
+  });
+
+  it("B5. unlock() resolves when resume() throws synchronously (best-effort, never throws)", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    getMockCtx().resume.mockImplementationOnce(() => {
+      throw new Error("resume unavailable");
+    });
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = audio.unlock();
+    }).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    audio.dispose();
   });
 });
 
@@ -633,6 +762,35 @@ describe("C. load", () => {
     audio.disposeAll();
     expect(unloadSpy.mock.calls.length).toBe(unloadAfterAbort);
   });
+
+  it("C12. disposeAll() while a load is in flight: the late `load` rejects AudioDisposedError and unloads the Howl", async () => {
+    setManualLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const promise = audio.load("test.mp3");
+    const howl = lastHowl();
+    const unloadSpy = vi.spyOn(howl, "unload");
+    audio.disposeAll();
+    // Howler's decode completes after the controller was torn down.
+    howl.__emitLoad();
+    await expect(promise).rejects.toBeInstanceOf(AudioDisposedError);
+    expect(unloadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("C10. Howler emitting `load` synchronously inside `new Howl()` (cache hit) still resolves", async () => {
+    setSyncLoad(true);
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("cached.mp3");
+    expect(sound.disposed).toBe(false);
+    audio.dispose();
+  });
+
+  it("C11. Howler emitting `loaderror` synchronously inside `new Howl()` still rejects with AudioError", async () => {
+    setSyncLoad(true);
+    setLoadFail(true);
+    const audio = createAudio({ autoUnlock: false });
+    await expect(audio.load("clip.xyz")).rejects.toBeInstanceOf(AudioError);
+    audio.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -759,6 +917,101 @@ describe("D. Sound.play / pause / stop", () => {
     ctrl.abort();
     expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
 
+    audio.dispose();
+  });
+
+  it("D11a. play({ signal }) — a loop flag flipped to true via nativeHowl AFTER play() keeps the abort wiring alive past the first `end`", async () => {
+    // aiaudiojs-12: onEnd must read the LIVE loop flag (howl.loop(id)), not
+    // the `looping` value captured when play() was called.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const id = sound.play({ loop: false, signal: ctrl.signal });
+    sound.nativeHowl.loop(true, id);
+
+    // Loop boundary `end` must NOT tear down the abort wiring now that the
+    // voice is actually looping.
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    ctrl.abort();
+    expect(stopSpy).toHaveBeenCalledWith(id);
+
+    audio.dispose();
+  });
+
+  it("D11b. play({ loop: true, signal }) — a loop flag flipped to false via nativeHowl lets the next `end` tear down the abort wiring", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ loop: true, signal: ctrl.signal });
+    sound.nativeHowl.loop(false, id);
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit("end", id);
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D11c. play({ signal }) — a per-id `playerror` tears down the abort wiring (HTML5 autoplay rejection)", async () => {
+    // aiaudiojs-12: HTML5 fallback emits only `playerror` (never end/stop)
+    // when the browser rejects an autoplay `node.play()`.
+    const audio = createAudio({ autoUnlock: false });
+    const sound = await audio.load("test.mp3");
+    const ctrl = new AbortController();
+    const stopSpy = vi.spyOn(sound.nativeHowl, "stop");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const id = sound.play({ signal: ctrl.signal });
+
+    (sound.nativeHowl as unknown as { __emit: (ev: string, id: number) => void }).__emit(
+      "playerror",
+      id,
+    );
+
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopCallsBefore = stopSpy.mock.calls.length;
+    ctrl.abort();
+    expect(stopSpy.mock.calls.length).toBe(stopCallsBefore);
+
+    audio.dispose();
+  });
+
+  it("D12. play() with exactly one paused voice starts a NEW voice and leaves the paused one untouched", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const bgm = await audio.load("bgm.mp3");
+    const howl = bgm.nativeHowl as unknown as { _sounds: MockVoice[] };
+    const a = bgm.play({ loop: true, volume: 0.3 });
+    bgm.pause(a);
+    const b = bgm.play();
+    expect(b).not.toBe(a);
+    expect(howl._sounds).toHaveLength(2);
+    expect(howl._sounds.find((v) => v._id === a)).toMatchObject({
+      _paused: true,
+      _ended: false,
+      _loop: true,
+      _volume: 0.3,
+    });
+    expect(bgm.resume(a)).toBe(a);
+    audio.dispose();
+  });
+
+  it("D13. linear crossfade into a Sound with one paused voice starts a fresh incoming voice", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    const other = await audio.load("other.mp3");
+    const menu = await audio.load("menu.mp3");
+    const howl = menu.nativeHowl as unknown as { _sounds: MockVoice[] };
+    other.play({ loop: true });
+    const m = menu.play({ loop: true });
+    menu.pause(m);
+    audio.crossfade(other, menu, { duration: 1 }).catch(() => {});
+    expect(howl._sounds.find((v) => v._id === m)).toMatchObject({ _paused: true, _loop: true });
+    expect(howl._sounds.filter((v) => !v._paused)).toHaveLength(1);
     audio.dispose();
   });
 

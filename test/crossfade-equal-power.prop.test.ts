@@ -45,7 +45,7 @@ vi.mock("howler", () => {
 
   class Howl {
     _sounds: Array<{ _id: number; _node: { gain: ReturnType<typeof makeMockGainParam> } }> = [];
-    opts: { src: string[]; preload?: boolean };
+    opts: { src: string[]; preload?: boolean; onload?: AnyFn };
     fade = vi.fn();
     volume = vi.fn();
     rate = vi.fn();
@@ -54,9 +54,11 @@ vi.mock("howler", () => {
     pause = vi.fn();
     unload = vi.fn();
 
-    constructor(opts: { src: string[]; preload?: boolean }) {
+    constructor(opts: { src: string[]; preload?: boolean; onload?: AnyFn }) {
       this.opts = opts;
       handlers.set(this, new Map());
+      // Howler's init() installs the `onload` constructor option as a listener.
+      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
       Promise.resolve().then(() => {
         const map = handlers.get(this);
         if (map === undefined) return;
@@ -101,6 +103,9 @@ vi.mock("howler", () => {
         return mockCtx;
       },
       volume: vi.fn(),
+      // Howler's own running/suspended tracking (distinct from ctx.state);
+      // Howl.play() only starts Web Audio playback while it is "running".
+      state: "running",
     },
     __resetSoundId,
     __getMockCtx,
@@ -188,25 +193,34 @@ describe("equal-power crossfade constant-power property", () => {
           const fromGain = fromHowl._sounds[0]!._node.gain;
           const toGain = toHowl._sounds[0]!._node.gain;
 
-          const fromCurveCall = fromGain.setValueCurveAtTime.mock.calls[0];
-          const toCurveCall = toGain.setValueCurveAtTime.mock.calls[0];
+          // No SetValueCurve event (its exclusive window would make Howler's
+          // own gain writes throw mid-ramp); the curve is scheduled as
+          // setValueAtTime(curve[0], now) + one linear ramp per later point.
+          expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
+          expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
+          const rebuild = (g: GainParam): { curve: number[]; times: number[] } => {
+            const start = g.setValueAtTime.mock.calls[0] as [number, number];
+            const ramps = g.linearRampToValueAtTime.mock.calls as Array<[number, number]>;
+            return {
+              curve: [start[0], ...ramps.map((r) => r[0])],
+              times: [start[1], ...ramps.map((r) => r[1])],
+            };
+          };
+          const fromRamp = rebuild(fromGain);
+          const toRamp = rebuild(toGain);
+          const fromCurve = fromRamp.curve;
+          const toCurve = toRamp.curve;
 
-          // Both curves must exist.
-          expect(fromCurveCall).toBeDefined();
-          expect(toCurveCall).toBeDefined();
-
-          const fromCurve = fromCurveCall![0] as Float32Array;
-          const toCurve = toCurveCall![0] as Float32Array;
-
-          // Float32Array of length 64.
-          expect(fromCurve).toBeInstanceOf(Float32Array);
-          expect(toCurve).toBeInstanceOf(Float32Array);
+          // 64 curve points each.
           expect(fromCurve.length).toBe(64);
           expect(toCurve.length).toBe(64);
 
-          // Third arg === duration.
-          expect(fromCurveCall![2]).toBe(duration);
-          expect(toCurveCall![2]).toBe(duration);
+          // Ramp spans exactly [now, now + duration], points strictly increasing.
+          for (const times of [fromRamp.times, toRamp.times]) {
+            expect(times[0]).toBe(0);
+            expect(times[63]).toBe(duration);
+            for (let i = 1; i < 64; i++) expect(times[i]!).toBeGreaterThan(times[i - 1]!);
+          }
 
           const mv = masterVolume;
 

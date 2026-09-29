@@ -29,7 +29,17 @@ const budgets = {
   // ended-voice guard with the no-arg path via a single-loop restructure
   // (prevents drift). The guard adds one `_id !== id` continue check per loop
   // iteration plus an early-return arm — irreducible runtime logic.
-  "dist/index.js": 2_210,
+  //
+  // 2026-09-28 review pass: bumped 2210 → 2500 B (maintainer-approved, one-off).
+  // Measured 2470 B. Largest single cost is the equal-power ramp rewrite
+  // (setValueCurveAtTime → piecewise linearRampToValueAtTime), which stops
+  // Howler's own per-voice gain writes from throwing NotSupportedError mid
+  // crossfade. The rest is seven P1/P2 fixes (synchronous load/loaderror
+  // settle, null Howler.ctx, disposeAll vs in-flight load, crossfade abort
+  // settle, suspended-context reporting, play() always a new voice, queued-
+  // play resume guard) and two P3s (live loop flag + playerror teardown,
+  // activation-event autoUnlock retry). Not a precedent for routine bumps.
+  "dist/index.js": 2_500,
 };
 
 const failures = [];

@@ -17,16 +17,18 @@ import { Howl, Howler } from "howler";
  */
 export interface AudioOptions {
   /**
-   * If true (default), the first user gesture (touchstart / mousedown /
+   * If true (default), the first user gesture (touchend / pointerup /
    * keydown) on the page calls `Howler.ctx.resume()` and detaches the
-   * listeners. Set false if you want to wire the unlock manually via
-   * {@link Audio.unlock}.
+   * listeners once the context is actually running. Set false if you want
+   * to wire the unlock manually via {@link Audio.unlock}.
    */
   autoUnlock?: boolean;
 
   /**
-   * Master volume applied to every Howl created by this Audio instance.
-   * Range `[0, 1]`. Default `1`.
+   * Master volume. Range `[0, 1]`. Default `1`. Applied via Howler's
+   * GLOBAL `Howler.volume()`, not scoped to this Audio instance — other
+   * `Audio` instances (or callers) that also touch `Howler.volume()` share
+   * and can overwrite it. Prefer one `Audio` controller per app/scene.
    */
   volume?: number;
 
@@ -44,7 +46,11 @@ export interface AudioOptions {
  * @public
  */
 export interface PlayOptions {
-  /** Range `[0, 1]`. Default: the Audio instance's master volume. */
+  /**
+   * Relative `[0, 1]` per-voice volume. Default `1`. This is multiplied by
+   * the Audio instance's master volume (applied globally by Howler), not
+   * defaulted to it — defaulting to the master would double-attenuate.
+   */
   volume?: number;
   /** Playback rate. Default `1`. */
   rate?: number;
@@ -63,9 +69,10 @@ export interface PlayOptions {
  * - `'linear'`       — amplitude ramp via Howler fade() (default; backward-compat).
  * - `'equal-power'`  — perceptual-loudness-preserving sin/cos ramp scheduled
  *                     directly on each sound's Web Audio GainNode
- *                     (`_node.gain`) via `setValueCurveAtTime`. Requires Howler
- *                     to be in Web Audio mode; in HTML5 fallback mode it throws
- *                     `AudioError` and the caller may downgrade to linear.
+ *                     (`_node.gain`) as piecewise `linearRampToValueAtTime`
+ *                     points. Requires Howler to be in Web Audio mode; in HTML5
+ *                     fallback mode it throws `AudioError` and the caller may
+ *                     downgrade to linear.
  *
  * @public
  */
@@ -79,7 +86,13 @@ export type CrossfadeCurve = "linear" | "equal-power";
 export interface CrossfadeOptions {
   /** Crossfade duration in seconds. */
   duration: number;
-  /** Aborting cancels both ramps and resolves the promise immediately. */
+  /**
+   * Aborting resolves the promise immediately. On the `'equal-power'`
+   * curve, aborting also freezes both ramps at their current gain. On the
+   * `'linear'` curve (Howler's own `fade()`), Howler's fades cannot be
+   * cancelled mid-flight, so aborting does NOT stop the in-progress ramps —
+   * it only makes the returned promise settle early.
+   */
   signal?: AbortSignal;
   /**
    * Fade curve. Default `'linear'` (backward-compat).
@@ -87,7 +100,10 @@ export interface CrossfadeOptions {
    *
    * @remarks
    * `'equal-power'` schedules relative `[0, 1]` sin/cos ramps directly on each
-   * sound's Web Audio GainNode (`_node.gain`) via `setValueCurveAtTime`: the
+   * sound's Web Audio GainNode (`_node.gain`) as 64-point piecewise
+   * `linearRampToValueAtTime` schedules (not `setValueCurveAtTime`, whose
+   * exclusive time window makes any other gain write during the ramp — e.g.
+   * Howler's own volume / fade / resume — throw `NotSupportedError`): the
    * outgoing sound follows `cos` (1 -> 0) and the incoming sound follows `sin`
    * (0 -> 1), so `sin^2 + cos^2 = 1` keeps the perceived loudness flat. The
    * curves are NOT scaled by the master volume — the master is applied exactly
@@ -124,9 +140,13 @@ export interface Sound {
   /**
    * Resume a paused instance, or all paused instances if id is omitted.
    *
-   * - With `id`: resumes that specific voice and returns it.
-   * - Without `id`: resumes every currently-paused voice (`_paused === true`)
-   *   and returns the last resumed id, or `-1` if nothing was paused.
+   * - With `id`: resumes that specific voice and returns it, or returns
+   *   `-1` if `id` is not currently a paused, non-ended voice (e.g. it
+   *   already ended naturally, was never paused, or its `play()` is still
+   *   queued behind the AudioContext).
+   * - Without `id`: resumes every currently-paused, non-ended voice
+   *   (`_paused === true && _ended !== true`) and returns the last resumed
+   *   id, or `-1` if nothing was resumed.
    *
    * @throws {@link AudioDisposedError} if called after {@link dispose}.
    */
@@ -145,7 +165,8 @@ export interface Sound {
   /**
    * Idempotent teardown for this Sound only. Stops every instance,
    * unloads the buffer, releases the Howl. Subsequent `play` / `pause` /
-   * `stop` / `fade` throw {@link AudioDisposedError}.
+   * `stop` / `resume` throw {@link AudioDisposedError} synchronously;
+   * `fade` instead returns a promise that rejects with it.
    */
   dispose(): void;
 
@@ -180,12 +201,14 @@ export interface Audio {
    * @remarks
    * **F3 — abort racing decode completion:** If `signal` aborts while a load is
    * in flight, `load()` rejects with `AbortError` and unloads the Howl. The
-   * abort listener is removed once the `load` event fires, so aborting *after*
-   * the load resolves is a no-op. In the narrow case where Howler still emits
-   * its internal `load` event *after* an abort has already rejected (the decode
-   * was already in-flight), a `Sound` is briefly added to the internal set and
-   * then reclaimed by the next {@link disposeAll}. Call {@link disposeAll} if
-   * you abort a load whose completion you cannot guarantee.
+   * first of Howler's `load` / `loaderror` events or the abort to fire settles
+   * the promise and detaches the other two listeners (a `settled` guard plus
+   * bare `off()`), so a `load` event Howler still emits *after* the abort has
+   * already rejected is a no-op: no `Sound` is added to the internal set and
+   * no second `unload()` happens. `disposeAll()` racing an in-flight `load()`
+   * is handled the same way: the eventual `load` rejects with
+   * {@link AudioDisposedError} instead of adding a `Sound` nobody could
+   * reclaim.
    *
    * @security The `url` parameter is passed directly to `new Howl({ src: [url] })`,
    * which forwards it to `Audio.src` (HTML5 mode) or `XMLHttpRequest.open`
@@ -201,8 +224,9 @@ export interface Audio {
    * Default `'linear'` curve delegates to `Howl.fade()` on both ramps; aborting
    * via `opts.signal` clears the resolve timer but cannot stop the in-flight
    * Howler ramp (both continue silently). Opt-in `curve: 'equal-power'` (0.3.0)
-   * schedules sin/cos ramps on the AudioContext via `setValueCurveAtTime`,
-   * preserving perceptual loudness; abort cancels the schedule cleanly.
+   * schedules sin/cos ramps on the AudioContext as piecewise
+   * `linearRampToValueAtTime` points, preserving perceptual loudness; abort
+   * cancels the schedule cleanly.
    *
    * **Failure channels — synchronous `throw` vs promise rejection.** This method
    * reports errors on two different channels; a `.catch()` alone does NOT cover
@@ -239,8 +263,8 @@ export interface Audio {
    * playing at its full relative gain before calling
    * `crossfade({ curve: 'equal-power' })`.
    *
-   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a `setValueCurveAtTime`
-   * / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
+   * **F9 — AudioParam scheduling throwing mid-crossfade:** If a
+   * `linearRampToValueAtTime` / `setValueAtTime` call throws *after* the ramps have begun (e.g. the context
    * is closed unexpectedly mid-crossfade), the `to` sound may be left running at
    * its scheduled gain with no further ramp applied. This is a known defensive
    * edge case distinct from the pre-flight `AudioError` throws above: it surfaces
@@ -250,7 +274,12 @@ export interface Audio {
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
 
-  /** Master volume. Setting this propagates to every active Sound. */
+  /**
+   * Master volume. Getting/setting this reads/writes Howler's GLOBAL
+   * `Howler.volume()` — it does not iterate or scope to this Audio
+   * instance's own Sounds, so it also affects any other `Audio` instance
+   * or direct Howler usage sharing the page.
+   */
   volume: number;
 
   /**
@@ -258,8 +287,9 @@ export interface Audio {
    * the Audio interface conforms to the ai*js convention that every
    * factory-built handle exposes `dispose()`. Tears down every
    * {@link Sound} this Audio instance created and releases the
-   * underlying Howler bindings. Subsequent `load` / `unlock` /
-   * `crossfade` throw {@link AudioDisposedError}.
+   * underlying Howler bindings. Subsequent `crossfade` throws
+   * {@link AudioDisposedError} synchronously; `load` and `unlock` instead
+   * return a promise that rejects with it.
    */
   dispose(): void;
 
@@ -267,8 +297,9 @@ export interface Audio {
    * Idempotent teardown — identical effect to {@link Audio.dispose};
    * kept as a descriptive name for code paths that want to be explicit
    * about the cascading nature (every Sound this Audio created is torn
-   * down). Subsequent `load` / `unlock` / `crossfade` throw
-   * {@link AudioDisposedError}.
+   * down). Subsequent `crossfade` throws {@link AudioDisposedError}
+   * synchronously; `load` and `unlock` instead return a promise that
+   * rejects with it.
    */
   disposeAll(): void;
 
@@ -420,13 +451,20 @@ function resolveAfterWithAbort(
     const finish = (aborted: boolean): void => {
       if (done) return;
       done = true;
-      if (aborted) onAbort();
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
+      // try/finally: if the abort side effect throws (e.g. an engine rejecting
+      // the equal-power freeze), `done` is already set, so the timer would
+      // return early and the promise would never settle. The exception still
+      // propagates out of the abort listener and is reported there.
+      try {
+        if (aborted) onAbort();
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        detachAbort();
+        resolve();
       }
-      detachAbort();
-      resolve();
     };
 
     timer = setTimeout(() => finish(false), durationMs);
@@ -449,6 +487,12 @@ class SoundImpl implements Sound {
   // over) after the sound is unloaded. Howler emits no 'unload' event, so
   // unload() alone cannot trigger these — dispose() must invoke them.
   private readonly _abortCleanups = new Set<() => void>();
+  // Voice ids whose play() Howler deferred (Web Audio: context not running,
+  // queued behind once('resume'); HTML5: waiting on the media element). Such a
+  // voice reads `_paused === true` until Howler starts it, but it was never
+  // paused: replaying it from resume() would queue a SECOND start and orphan
+  // the first buffer source. Each id leaves the set on its Howler `play` event.
+  private readonly _pendingPlays = new Set<number>();
 
   constructor(
     private readonly howl: Howl,
@@ -470,7 +514,16 @@ class SoundImpl implements Sound {
   play(opts?: PlayOptions): number {
     this.ck();
     const looping = opts?.loop ?? false;
-    const id = this.howl.play();
+    // Always start a NEW voice. A bare Howl.play() resumes the single paused,
+    // not-ended voice when exactly one exists, and the per-id setters below
+    // would then clobber that voice's volume / rate / loop. Naming the
+    // `__default` sprite (which Howler always defines; load() adds no sprites)
+    // skips that branch and still plays the full buffer.
+    const id = this.howl.play("__default");
+    if ((this.howl as unknown as { _playLock?: boolean })._playLock === true) {
+      this._pendingPlays.add(id);
+      this.howl.once("play", () => this._pendingPlays.delete(id), id);
+    }
     // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
     // once via Howler's global gain (`Howler.volume`). Defaulting this to the
     // masterVolume would double-attenuate (Howler global × per-id default →
@@ -496,6 +549,7 @@ class SoundImpl implements Sound {
           }
           howl.off("end", onEnd, id);
           howl.off("stop", onStop, id);
+          howl.off("playerror", onPlayError, id);
           this._abortCleanups.delete(cleanup);
         };
 
@@ -503,11 +557,19 @@ class SoundImpl implements Sound {
         // LOOPING voice, Howler fires `end` at every loop boundary while
         // playback continues, so cleanup there would tear down the abort
         // wiring mid-playback (AUD-R-01); only a non-loop `end` terminates the
-        // voice. `stop` always terminates, looping or not.
+        // voice. `stop` always terminates, looping or not. Read the LIVE loop
+        // flag (`howl.loop(id)`) rather than the `looping` value captured at
+        // play() time: a loop flag flipped later via `nativeHowl` would
+        // otherwise make this decision stale in either direction.
         const onEnd = (_id: number): void => {
-          if (!looping) cleanup();
+          if (!howl.loop(id)) cleanup();
         };
         const onStop = (_id: number): void => cleanup();
+        // HTML5 fallback: a rejected `node.play()` (e.g. autoplay policy)
+        // emits only `playerror`, never `end`/`stop`, so without this the
+        // abort wiring (and this Howl, via its closure) would be retained
+        // indefinitely.
+        const onPlayError = (_id: number): void => cleanup();
 
         onAbort = (): void => {
           howl.stop(id);
@@ -517,6 +579,7 @@ class SoundImpl implements Sound {
         signal.addEventListener("abort", onAbort, { once: true });
         howl.on("end", onEnd, id);
         howl.on("stop", onStop, id);
+        howl.on("playerror", onPlayError, id);
         this._abortCleanups.add(cleanup);
       }
     }
@@ -539,9 +602,12 @@ class SoundImpl implements Sound {
     // between the id-specific and no-arg paths (C9 / AUD-B-01). Howler marks
     // stopped / naturally-ended / never-played pooled voices `_paused === true`
     // AND `_ended === true`; replaying those restarts finished SFX from zero.
+    // A voice whose play() is still pending is not paused either (see
+    // `_pendingPlays`).
     let last = -1;
     for (const s of getSounds(this.howl)) {
       if (s._paused !== true || s._ended === true || s._id === undefined) continue;
+      if (this._pendingPlays.has(s._id)) continue;
       if (id !== undefined) {
         if (s._id !== id) continue;
         this.howl.play(id);
@@ -627,15 +693,29 @@ export function createAudio(opts?: AudioOptions): Audio {
     if (state.disposed) throw new AudioDisposedError("aiaudiojs: Audio has been disposed");
   }
 
-  // Wire up autoUnlock.
+  // Wire up autoUnlock. Listen only on events the HTML spec treats as
+  // "activation-triggering" (touchend, pointerup, keydown) — `touchstart` is
+  // NOT one, so `ctx.resume()` from it is refused by the browser's autoplay
+  // policy. Detach only once resume() actually leaves the context running:
+  // an activation event whose resume() gets refused (or fails) keeps the
+  // listeners attached so the next gesture can retry.
   if (state.autoUnlock && typeof document !== "undefined") {
-    const unlockEvents = ["touchstart", "mousedown", "keydown"];
-    const handler = (): void => {
+    const unlockEvents = ["touchend", "pointerup", "keydown"];
+    const detach = (): void => {
       for (const ev of unlockEvents) {
         document.removeEventListener(ev, handler);
       }
       state.unlockHandlers = undefined;
-      Howler.ctx?.resume().catch(noop);
+    };
+    const handler = (): void => {
+      const ctx = Howler.ctx;
+      if (ctx == null) {
+        detach();
+        return;
+      }
+      ctx.resume().then(() => {
+        if (ctx.state === "running") detach();
+      }, noop);
     };
     for (const ev of unlockEvents) {
       document.addEventListener(ev, handler, { once: false });
@@ -657,8 +737,16 @@ export function createAudio(opts?: AudioOptions): Audio {
   function unlock(): Promise<void> {
     if (state.disposed)
       return Promise.reject(new AudioDisposedError("aiaudiojs: Audio has been disposed"));
-    if (Howler.ctx === undefined) return Promise.resolve();
-    return Howler.ctx.resume().catch(noop);
+    // Real Howler models "no AudioContext" (HTML5 fallback, SSR, jsdom) as
+    // `null`, never `undefined`, so compare loosely. Best-effort: a resume()
+    // that throws synchronously resolves too, like one that rejects.
+    const ctx = Howler.ctx;
+    if (ctx == null) return Promise.resolve();
+    try {
+      return ctx.resume().catch(noop);
+    } catch {
+      return Promise.resolve();
+    }
   }
 
   function load(url: string, signal?: AbortSignal): Promise<Sound> {
@@ -671,7 +759,6 @@ export function createAudio(opts?: AudioOptions): Audio {
       return Promise.reject(new DOMException("Load aborted", "AbortError"));
     }
     return new Promise<Sound>((resolve, reject) => {
-      const howl = new Howl({ src: [url], preload: true });
       // First of load / loaderror / abort to fire wins; the rest are no-ops.
       // Without this guard a late Howler `load` — decode finishing AFTER an
       // abort already rejected — would still run the `once("load")` callback,
@@ -689,24 +776,46 @@ export function createAudio(opts?: AudioOptions): Audio {
           signal?.removeEventListener("abort", abortHandler);
         }
         // Detach BOTH lifecycle listeners. This Howl is freshly built here and
-        // not yet exposed, so the only listeners on it are the `load` /
-        // `loaderror` once-handlers above; a bare off() clears every Howler
+        // not yet exposed, so the only listeners on it are the `onload` /
+        // `onloaderror` handlers below; a bare off() clears every Howler
         // event on it (howler.js: off() with no event empties all `_on*`).
         howl.off();
       };
-      howl.once("load", () => {
+      const onload = (): void => {
         if (settled) return;
         cleanup();
+        // disposeAll() ran while this decode was in flight: a Sound added now
+        // could never be reclaimed (every later disposeAll() is a no-op).
+        if (state.disposed) {
+          howl.unload();
+          reject(new AudioDisposedError("aiaudiojs: Audio has been disposed"));
+          return;
+        }
         sound = new SoundImpl(howl, state);
         state.sounds.add(sound);
         resolve(sound);
-      });
-      howl.once("loaderror", (_id: number, errMsg: unknown) => {
+      };
+      const onloaderror = (_id: number, errMsg: unknown): void => {
         if (settled) return;
         cleanup();
         howl.unload();
         reject(new AudioError(`load failed: ${String(errMsg)}`));
-      });
+      };
+      // The handlers MUST go in the constructor options, not a later once():
+      // Howler can emit `load` / `loaderror` synchronously inside `new Howl()`
+      // (buffer-cache hit, no codec / no extension, Howler.noAudio), and its
+      // _emit only schedules listeners that already exist at emit time — a
+      // once() attached after the constructor returns never fires and the
+      // promise never settles. Howler invokes them via setTimeout, so `howl`
+      // is always assigned by the time they run.
+      let howl: Howl;
+      try {
+        howl = new Howl({ src: [url], preload: true, onload, onloaderror });
+      } catch (err) {
+        // e.g. a malformed base64 data URI makes Howler's atob() throw.
+        reject(new AudioError(`load failed: ${String(err)}`));
+        return;
+      }
       if (signal !== undefined) {
         abortHandler = (): void => {
           if (settled) return;
@@ -741,20 +850,42 @@ export function createAudio(opts?: AudioOptions): Audio {
     const g = s._node?.gain as AudioParam;
     g.cancelScheduledValues(now);
     g.setValueAtTime(curve[0] as number, now);
-    g.setValueCurveAtTime(curve, now, dur);
+    // One linear ramp per remaining curve point: the same shape
+    // setValueCurveAtTime renders (it interpolates linearly between points),
+    // but without its exclusive [now, now + dur) window. The spec requires
+    // NotSupportedError for ANY other automation call inside a curve, and
+    // Howler's per-voice gain writes (volume / fade / mute, play(id)) are
+    // setValueAtTime(v, now) — they would throw mid-crossfade.
+    const last = curve.length - 1;
+    for (let i = 1; i <= last; i++) {
+      // `i / last` is exactly 1 for the final point, so it lands on now + dur.
+      g.linearRampToValueAtTime(curve[i] as number, now + dur * (i / last));
+    }
     s._volume = terminal;
     return g;
   }
 
   function crossfadeEqualPower(from: Sound, to: Sound, cfOpts: CrossfadeOptions): Promise<void> {
     const ctx = Howler.ctx;
-    if (ctx === undefined) {
+    // `null` is Howler's "no AudioContext" value (see unlock()).
+    if (ctx == null) {
       throw new AudioError("equal-power crossfade requires Web Audio mode; HTML5 fallback active");
+    }
+    // Web Audio mode, but the context is not running (no gesture yet, iOS
+    // "interrupted", Howler's auto-suspend): Howler would defer `to`'s start
+    // behind once('resume') and leave its voice `_paused`, so there is nothing
+    // to ramp yet. Mirrors Howl.play()'s own gate; checked before any voice
+    // is started, so nothing is queued or orphaned.
+    const howlerState = (Howler as unknown as { state?: string }).state;
+    if (howlerState !== "running" || (ctx.state as string) === "interrupted") {
+      throw new AudioError(
+        "equal-power crossfade requires a running AudioContext; call unlock() first",
+      );
     }
     // `from` is assumed to be already playing (crossfade contract); only the
     // incoming `to` is started here. Both fades are scheduled DIRECTLY on
-    // Howler's per-sound GainNode (`_node.gain`) via setValueCurveAtTime —
-    // Howl.fade() is not used in this path. No extra GainNodes are inserted,
+    // Howler's per-sound GainNode (`_node.gain`) as piecewise linear ramps
+    // (see rampSound) — Howl.fade() is not used in this path. No extra GainNodes are inserted,
     // so there is nothing to re-route or restore.
     const toId = to.play({ volume: 0 });
     // Past this point a voice is live on `to`; any reach-in failure (HTML5
