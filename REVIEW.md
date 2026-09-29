@@ -1,42 +1,42 @@
 # aiaudiojs Review
 
-Current review state after the 2026-09-28 ai*js pass. Historical fixed items were summarized to keep the repo lightweight.
+Current review state after the 2026-09-29 ai*js 0.6.0 pass. Historical fixed items were summarised to keep the repo lightweight.
 
 ## Current Known Issues / Backlog
 
 | Priority | Area | Status | Notes |
 | --- | --- | --- | --- |
-| P2 | Crossfade leaves the outgoing voice running at gain 0 | Open | Neither crossfade path stops `from` after the ramp; a looping outgoing voice plays silently forever and a later ping-pong crossfade ramps it back up (doubled/out-of-phase audio). Fix: capture and stop the ramped `from` voice ids on completion; scope the linear `to` fade to the new voice id instead of every pool voice. |
-| P2 | `crossfade()` cannot produce a looping incoming track | Open | `to.play({volume:0})` always applies a per-id `loop(false)`, overriding even a Howl-level `nativeHowl.loop(true)`, and the started id is discarded. Fix: add a `loop` (and optionally `volume`) option to `CrossfadeOptions`, passed through to `to.play()`. |
-| P3 | `Sound.fade` does not validate `from`/`to`/`ms` | Open | Unlike `crossfade`, non-finite values reach Howler's Web Audio calls and throw a raw `TypeError` instead of rejecting; huge `ms` overflows `setTimeout` and fires immediately. deferred: the fix changes `fade`'s public contract (rejecting inputs it silently accepted before) and also needs a shared timer-delay clamp with `crossfade`'s abort helper, so it needs its own reviewed change rather than a same-pass P3 patch. Fix: reject `AudioError` for non-finite/negative `from`/`to`/`ms` (matching `crossfade`'s wording) and clamp/chunk timer delays above 2^31-1 ms. |
-| P3 | Howler mock fidelity gaps hide hotspot bugs | Open | The shared mocks diverge from real Howler 2.2.4 (always-async `load` emit, `ctx: undefined` instead of `null`, no `_playLock` queueing, no AudioParam curve-overlap rule, `play()` always creates a new voice), so several fixed hotspots (aiaudiojs-1, -2, -5, -6, -9, -10) and edge cases (dispose mid-load, dispose mid-crossfade, `crossfade(s, s)`, ping-pong crossfades, a throwing `onAbort`) have no regression coverage in the fast mock suite. deferred: extending the mock to be spec-faithful (sync-emit constructor mode, `ctx: null`, `_playLock` queueing, a curve-overlap-enforcing gain param) plus the full aiaudiojs-1..12 regression matrix is a standalone test-infrastructure project, not a same-pass patch. Fix: add the fidelity modes above, then backfill regression tests per finding. |
 | P3 | Multi-instance master volume | Documented | `Howler.volume()` is global, so multiple `Audio` controllers can overwrite master volume. Prefer one controller per app/scene. |
-| — | `dist/index.js` size budget raised to 2,500 B | Note | One-off, maintainer-approved bump from 2,210 B for this pass's fixes (measured 2,470 B); reasons are itemised in `scripts/check-size.mjs`. About 30 B of headroom remains. |
+| P3 | Family numeric-validation rule outside `fade` / `crossfade` / `play` rate | Deferred | The ai*js 0.6.0 rule says a non-finite numeric argument reports `AudioError`, but three lenient paths remain: the master `volume` (option and setter) normalises `NaN` to `0` and clamps to `[0, 1]` (a documented, tested AUD-S-02 contract); `PlayOptions.volume` outside `[0, 1]` (including `NaN`) is silently ignored by Howler; non-integer sound ids are no-ops in Howler. deferred: each is a new throw on a previously lenient, documented path that the 0.6.0 decisions did not cover, and `play()` volume/rate ranges (`> 1`, `rate <= 0`) need a maintainer call on the contract to freeze at 1.0. Only the crashing case (a non-finite `rate`, which threw a raw Web Audio `TypeError` after the voice had started) was fixed in 0.6.0. |
 
 ## Fixed Summary
 
-- Dispose and `disposeAll()` are idempotent and unload managed Howls.
-- `resume()` filters ended voices and returns `-1` when nothing resumes.
-- Equal-power crossfade applies master volume exactly once and aborts Web Audio schedules cleanly.
-- HTML5 fallback and unexpected Howler internals throw named `AudioError` rather than orphaning started voices.
-- `load()`'s settled guard (0.5.8) detaches both lifecycle listeners on the first of load/loaderror/abort, so a late Howler `load` after an already-rejected abort never adds an orphaned `Sound`.
-- `load()` settles even when Howler emits `load`/`loaderror` synchronously inside `new Howl()` (buffer-cache hits, missing/unsupported codecs, `Howler.noAudio`).
-- `unlock()` and equal-power crossfade treat Howler's `ctx === null` (not `undefined`) as "no AudioContext", and `unlock()` never throws synchronously.
-- `disposeAll()` rejects an in-flight `load()` with `AudioDisposedError` instead of leaving an unreclaimable `Sound` behind.
-- An equal-power crossfade abort whose gain-freeze throws still settles the returned promise instead of hanging forever.
-- Equal-power crossfade reports a suspended/not-running `AudioContext` with its own `AudioError` instead of the misleading HTML5-fallback message.
-- `Sound.play()` always starts a new voice — a bare Howler `play()` no longer resumes and clobbers the one existing paused voice.
-- `resume()` no longer replays a voice whose `play()` is still queued behind the AudioContext, which used to double-start its buffer source.
-- Equal-power crossfade schedules ramps as piecewise `linearRampToValueAtTime` points instead of `setValueCurveAtTime`, so mid-ramp Howler gain writes (fade / resume / a following crossfade) no longer throw `NotSupportedError`.
-- `play({signal})`'s teardown reads the live per-id loop flag (not the flag captured at `play()` time) and treats a per-id `playerror` as terminal, so the abort wiring can no longer go stale or leak on an HTML5 autoplay rejection.
-- `autoUnlock` listens on activation-triggering events (`touchend` / `pointerup` / `keydown`, not `touchstart`) and keeps retrying until `resume()` actually leaves the context running.
-- JSDoc for `PlayOptions.volume`, `AudioOptions.volume`, `Audio.volume`, `CrossfadeOptions.signal`, `Sound.resume`, `Sound.dispose`, `Audio.dispose`/`disposeAll`, and the `load()` F3 remark now match implemented behaviour.
+- Dispose and `disposeAll()` are idempotent, unload managed Howls, and reject every in-flight `load()` with `AudioDisposedError` immediately (0.6.0; earlier releases waited for Howler's decode, which may never finish).
+- `load()` settles on the first of load / loaderror / abort / dispose and detaches every listener, so a late Howler `load` never adds an orphaned `Sound` (0.5.8); it also settles when Howler emits synchronously inside `new Howl()`.
+- `unlock()` and equal-power crossfade treat Howler's `ctx === null` as "no AudioContext", and `unlock()` never throws synchronously.
+- `resume()` filters ended voices, returns `-1` when nothing resumes, and never replays a voice whose `play()` is still queued behind the AudioContext; a queued play rejected with `playerror` no longer leaks its `play` listener (0.6.0).
+- `Sound.play()` always starts a new voice, rejects a non-finite `rate` with `AudioError` before starting one (0.6.0), and its `signal` teardown reads the live loop flag and treats `playerror` as terminal.
+- `Sound.fade()` rejects `AudioError` for `from` / `to` outside finite `[0, 1]` and for a non-finite or negative `ms`, before `Howl.fade()` runs, and never throws synchronously (0.6.0).
+- Crossfade stops the outgoing voices it captured before `to` started when the duration elapses, scopes the linear incoming fade to the new voice, supports `crossfade(s, s)` and ping-pong crossfades, and adds `CrossfadeOptions.loop`; abort stops nothing (0.6.0).
+- Every `setTimeout` delay goes through one `clampDelay` helper (2,147,483,647 ms), so huge fade / crossfade durations no longer fire at once (0.6.0).
+- Equal-power crossfade applies master volume exactly once, schedules piecewise `linearRampToValueAtTime` ramps (no `setValueCurveAtTime` window for Howler's gain writes to collide with), freezes cleanly on abort even when the freeze throws, and reports a suspended context with its own `AudioError`.
+- HTML5 fallback and unexpected Howler internals throw named `AudioError` rather than orphaning started voices; crossfade reads `from`'s voices before `to` starts (0.6.0).
+- `crossfade()` reports a missing options argument or a non-`Sound` with `AudioError` instead of a raw `TypeError`, and every `AudioError` message carries the `aiaudiojs: ` prefix (0.6.0).
+- `autoUnlock` listens on activation-triggering events (`touchend` / `pointerup` / `keydown`) and keeps retrying until `resume()` leaves the context running.
+- `package.json` `exports` nests `types` under `import` / `require` (`require.types` → `dist/index.d.cts`), fixing TS1479 for `node16` / `nodenext` CommonJS consumers; `verify-exports` walks nested conditions and `test/exports.test.ts` type-checks both (0.6.0).
+- The unit suites share one spec-faithful Howler mock (`test/howler-mock.ts`) with play-lock queuing, the bare-`play()` resume branch, sync-emit and `ctx: null` modes, and gain params enforcing the Web Audio curve-overlap and non-finite rules, with a regression test per finding above; `pnpm typecheck` covers `test/` (0.6.0).
+- `dist/index.js` budget is 2,700 B for 0.6.0 (measured 2,566 B); the reasons are itemised in `scripts/check-size.mjs`.
+- JSDoc for `PlayOptions`, `AudioOptions.volume`, `Audio.volume`, `CrossfadeOptions`, `Sound.resume`, `Sound.fade`, `Sound.dispose`, `Audio.dispose` / `disposeAll`, `Audio.load` and `Audio.crossfade` matches implemented behaviour.
 
 ## Verification Baseline
 
 - `pnpm typecheck`
+- `pnpm lint`
 - `pnpm test`
+- `pnpm coverage`
 - `pnpm verify:docs`
+- `pnpm build`
 - `pnpm verify:exports`
 - `pnpm verify:llms`
 - `pnpm check:size`
+- `pnpm prepublishOnly` runs all of the above in CI order.
