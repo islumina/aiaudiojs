@@ -1,10 +1,11 @@
-// Shared harness for the real-Howler regression suite (howler-real.test.ts).
+// Shared Web Audio fakes.
 //
-// Unlike the other test files, that suite does NOT vi.mock("howler"): it runs
-// the real howler 2.2.4 core against a stub AudioContext installed on
-// globalThis, so the Howler behaviours the unit mocks cannot see (synchronous
-// emits inside `new Howl()`, the buffer cache, `_playLock` / once('resume')
-// queuing, the single-paused-voice resume branch) are exercised for real.
+// howler-real.test.ts does NOT vi.mock("howler"): it runs the real howler
+// 2.2.4 core against a stub AudioContext installed on globalThis, so the
+// Howler behaviours a mock can only approximate (synchronous emits inside
+// `new Howl()`, the buffer cache, `_playLock` / once('resume') queuing, the
+// single-paused-voice resume branch) are exercised for real. The mocked suites
+// reuse FakeParam (via howler-mock.ts) as every voice's `_node.gain`.
 
 import { vi } from "vitest";
 
@@ -16,20 +17,6 @@ export const WAV2 =
 export const WAV3 =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAMA";
 
-export class FakeParam {
-  value = 1;
-  setValueAtTime = vi.fn((v: number, _t: number) => {
-    this.value = v;
-    return this;
-  });
-  linearRampToValueAtTime = vi.fn((v: number, _t: number) => {
-    this.value = v;
-    return this;
-  });
-  cancelScheduledValues = vi.fn((_t: number) => this);
-  setValueCurveAtTime = vi.fn((_c: Float32Array, _t: number, _d: number) => this);
-}
-
 interface TimelineEvent {
   type: "set" | "ramp" | "curve";
   time: number;
@@ -37,35 +24,42 @@ interface TimelineEvent {
 }
 
 /**
- * Spec-faithful AudioParam timeline: any automation call at t in [T, T+D) of a
- * scheduled curve throws NotSupportedError (Gecko ValidateEvent / WebKit
- * insertEvent). cancelScheduledValues(t) drops events with time >= t and keeps
- * an in-progress curve (Gecko); `cancelDropsActiveCurve = true` models WebKit.
+ * Spec-faithful AudioParam timeline. `setValueCurveAtTime(c, T, D)` records an
+ * exclusive [T, T+D) window, and any automation call inside it — or a curve
+ * overlapping an existing event — throws NotSupportedError (Gecko
+ * ValidateEvent / WebKit insertEvent). A non-finite value or time throws
+ * TypeError (WebIDL `float` / `double` conversion). cancelScheduledValues(t)
+ * drops events with time >= t and keeps an in-progress curve (Gecko).
+ * `value` jumps to the target of each set / ramp so a test can read the
+ * terminal gain.
  */
-export class SpecParam extends FakeParam {
+export class FakeParam {
+  value = 1;
   events: TimelineEvent[] = [];
-  cancelDropsActiveCurve = false;
-  private guard(t: number): void {
+  private guard(v: number, t: number): void {
+    if (!Number.isFinite(v) || !Number.isFinite(t)) {
+      throw new TypeError("The provided float value is non-finite");
+    }
     for (const e of this.events) {
       if (e.type === "curve" && e.time <= t && e.time + e.dur > t) {
         throw new DOMException("Can't add events during a curve event", "NotSupportedError");
       }
     }
   }
-  override setValueAtTime = vi.fn((v: number, t: number) => {
-    this.guard(t);
+  setValueAtTime = vi.fn((v: number, t: number) => {
+    this.guard(v, t);
     this.events.push({ type: "set", time: t, dur: 0 });
     this.value = v;
     return this;
   });
-  override linearRampToValueAtTime = vi.fn((v: number, t: number) => {
-    this.guard(t);
+  linearRampToValueAtTime = vi.fn((v: number, t: number) => {
+    this.guard(v, t);
     this.events.push({ type: "ramp", time: t, dur: 0 });
     this.value = v;
     return this;
   });
-  override setValueCurveAtTime = vi.fn((_c: Float32Array, t: number, d: number) => {
-    this.guard(t);
+  setValueCurveAtTime = vi.fn((c: Float32Array, t: number, d: number) => {
+    this.guard(c[0] ?? 0, t);
     for (const e of this.events) {
       if (t < e.time && t + d > e.time) {
         throw new DOMException(
@@ -77,12 +71,8 @@ export class SpecParam extends FakeParam {
     this.events.push({ type: "curve", time: t, dur: d });
     return this;
   });
-  override cancelScheduledValues = vi.fn((t: number) => {
-    this.events = this.events.filter((e) => {
-      if (e.time >= t) return false;
-      if (this.cancelDropsActiveCurve && e.type === "curve" && e.time + e.dur > t) return false;
-      return true;
-    });
+  cancelScheduledValues = vi.fn((t: number) => {
+    this.events = this.events.filter((e) => e.time < t);
     return this;
   });
 }
@@ -117,10 +107,8 @@ export class FakeAudioContext {
   sources: FakeBufferSource[] = [];
   gains: FakeGainNode[] = [];
   resumeImpl: () => Promise<void>;
-  paramFactory: () => FakeParam;
-  constructor(state: string, resumeImpl?: () => Promise<void>, paramFactory?: () => FakeParam) {
+  constructor(state: string, resumeImpl?: () => Promise<void>) {
     this.state = state;
-    this.paramFactory = paramFactory ?? (() => new FakeParam());
     this.resumeImpl =
       resumeImpl ??
       (() => {
@@ -129,7 +117,7 @@ export class FakeAudioContext {
       });
   }
   createGain(): FakeGainNode {
-    const g = new FakeGainNode(this.paramFactory());
+    const g = new FakeGainNode(new FakeParam());
     this.gains.push(g);
     return g;
   }
@@ -167,11 +155,10 @@ export interface Installed {
 export function installFakeWebAudio(
   state = "running",
   resumeImpl?: () => Promise<void>,
-  paramFactory?: () => FakeParam,
 ): Installed {
   let current: FakeAudioContext | undefined;
   const Ctor = function (this: unknown) {
-    current = new FakeAudioContext(state, resumeImpl, paramFactory);
+    current = new FakeAudioContext(state, resumeImpl);
     return current;
   } as unknown as { new (): FakeAudioContext };
   const g = globalThis as Record<string, unknown>;

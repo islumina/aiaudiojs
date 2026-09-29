@@ -13,141 +13,24 @@ import * as fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Howler mock — replicated per file (Vitest hoists per file boundary).
+// Howler mock — the shared spec-faithful voice pool (test/howler-mock.ts).
 // ---------------------------------------------------------------------------
 
-type AnyFn = (...args: unknown[]) => void;
+vi.mock("howler", () => import("./howler-mock.js"));
 
-vi.mock("howler", () => {
-  const handlers = new Map<object, Map<string, AnyFn>>();
-  let nextSoundId = 1;
-
-  function makeMockGainParam() {
-    return {
-      value: 1,
-      setValueAtTime: vi.fn(),
-      setValueCurveAtTime: vi.fn(),
-      cancelScheduledValues: vi.fn(),
-      linearRampToValueAtTime: vi.fn(),
-    };
-  }
-
-  const mockCtx = {
-    state: "running",
-    currentTime: 0,
-    resume: vi.fn().mockResolvedValue(undefined),
-    createGain: vi.fn(() => ({
-      gain: makeMockGainParam(),
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-    })),
-  };
-
-  class Howl {
-    _sounds: Array<{ _id: number; _node: { gain: ReturnType<typeof makeMockGainParam> } }> = [];
-    opts: { src: string[]; preload?: boolean; onload?: AnyFn };
-    fade = vi.fn();
-    volume = vi.fn();
-    rate = vi.fn();
-    loop = vi.fn();
-    stop = vi.fn();
-    pause = vi.fn();
-    unload = vi.fn();
-
-    constructor(opts: { src: string[]; preload?: boolean; onload?: AnyFn }) {
-      this.opts = opts;
-      handlers.set(this, new Map());
-      // Howler's init() installs the `onload` constructor option as a listener.
-      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
-      Promise.resolve().then(() => {
-        const map = handlers.get(this);
-        if (map === undefined) return;
-        const cb = map.get("load");
-        cb?.(undefined, undefined);
-      });
-    }
-
-    once(event: string, cb: AnyFn): void {
-      handlers.get(this)?.set(event, cb);
-    }
-
-    // Real Howler exposes off(); load() detaches its `load`/`loaderror`
-    // once-handlers on settle (post-abort late-load guard) with a bare off()
-    // that clears every event on this Howl. Mirror both shapes so the mock does
-    // not diverge from Howler and throw on the new detach call.
-    off(event?: string): void {
-      const map = handlers.get(this);
-      if (event === undefined) map?.clear();
-      else map?.delete(event);
-    }
-
-    play(): number {
-      const id = nextSoundId++;
-      this._sounds.push({ _id: id, _node: { gain: makeMockGainParam() } });
-      return id;
-    }
-  }
-
-  function __resetSoundId(): void {
-    nextSoundId = 1;
-  }
-
-  function __getMockCtx() {
-    return mockCtx;
-  }
-
-  return {
-    Howl,
-    Howler: {
-      get ctx() {
-        return mockCtx;
-      },
-      volume: vi.fn(),
-      // Howler's own running/suspended tracking (distinct from ctx.state);
-      // Howl.play() only starts Web Audio playback while it is "running".
-      state: "running",
-    },
-    __resetSoundId,
-    __getMockCtx,
-  };
-});
-
-// ---------------------------------------------------------------------------
-// Imports
-// ---------------------------------------------------------------------------
-
-import { Howler, __getMockCtx, __resetSoundId } from "howler";
 import { createAudio } from "../src/index.js";
+import type { FakeParam } from "./fake-web-audio.js";
+import { Howler, __resetMock } from "./howler-mock.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-type GainParam = {
-  value: number;
-  setValueAtTime: ReturnType<typeof vi.fn>;
-  setValueCurveAtTime: ReturnType<typeof vi.fn>;
-  cancelScheduledValues: ReturnType<typeof vi.fn>;
-  linearRampToValueAtTime: ReturnType<typeof vi.fn>;
-};
-
-function resetSoundId(): void {
-  (__resetSoundId as () => void)();
-}
-
-function getMockCtx(): ReturnType<typeof __getMockCtx> {
-  return (__getMockCtx as () => ReturnType<typeof __getMockCtx>)();
-}
+type GainParam = FakeParam;
 
 // ---------------------------------------------------------------------------
 // Reset between property runs
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  resetSoundId();
+  __resetMock();
   vi.clearAllMocks();
-  getMockCtx().currentTime = 0;
-  getMockCtx().resume.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -198,8 +81,15 @@ describe("equal-power crossfade constant-power property", () => {
           // setValueAtTime(curve[0], now) + one linear ramp per later point.
           expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
           expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
+          // Howler's own start / volume writes also use setValueAtTime; the
+          // ramp's start is the last one issued before the first ramp point.
           const rebuild = (g: GainParam): { curve: number[]; times: number[] } => {
-            const start = g.setValueAtTime.mock.calls[0] as [number, number];
+            const firstRamp = g.linearRampToValueAtTime.mock.invocationCallOrder[0] ?? 0;
+            const orders = g.setValueAtTime.mock.invocationCallOrder;
+            const sets = g.setValueAtTime.mock.calls.filter(
+              (_c, i) => (orders[i] ?? 0) < firstRamp,
+            );
+            const start = sets[sets.length - 1] as [number, number];
             const ramps = g.linearRampToValueAtTime.mock.calls as Array<[number, number]>;
             return {
               curve: [start[0], ...ramps.map((r) => r[0])],

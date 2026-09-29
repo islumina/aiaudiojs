@@ -39,7 +39,23 @@ const budgets = {
   // settle, suspended-context reporting, play() always a new voice, queued-
   // play resume guard) and two P3s (live loop flag + playerror teardown,
   // activation-event autoUnlock retry). Not a precedent for routine bumps.
-  "dist/index.js": 2_500,
+  //
+  // 0.6.0 minor: bumped 2500 → 2600 B (maintainer-approved for the 0.6.0
+  // minor; the measured closure plus about 25 B of headroom).
+  // Measured 2576 B after trimming (shared disposed / HTML5 message
+  // constants, one teardown Set replacing four State fields and their
+  // dispose-time gates, async unlock(), load() validation inside the promise
+  // executor, the linear and equal-power crossfade paths merged into one
+  // flow). The 0.6.0 contracts that consumed bytes:
+  //   - Sound.fade validation (from/to finite in [0, 1], ms finite >= 0,
+  //     rejection-only failure channel);
+  //   - crossfade completion-stop of the outgoing voices (by the ids captured
+  //     at entry), the id-scoped linear incoming fade, and CrossfadeOptions.loop;
+  //   - clampDelay (one 2^31-1 ms clamp for every setTimeout delay);
+  //   - dispose() settling in-flight load() calls immediately;
+  //   - play() rate validation, the queued-play `playerror` twin listener,
+  //     and the `aiaudiojs: ` prefix on every AudioError message.
+  "dist/index.js": 2_600,
 };
 
 const failures = [];

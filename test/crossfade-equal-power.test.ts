@@ -1,157 +1,26 @@
 // aiaudiojs v0.3.0 — equal-power crossfade test suite.
 //
 // Environment: happy-dom (provides AbortSignal, DOMException).
-// Howler is mocked in this file with an extended mock that exposes
-// _sounds (with per-sound _node.gain AudioParam), __setHtml5Mode,
-// __resetSoundId, __getMockCtx, and __forceCtxNull helpers.
+// Howler is the shared spec-faithful mock (test/howler-mock.ts): every voice's
+// `_node.gain` is a FakeParam (curve-overlap + non-finite rules), HTML5 mode
+// leaves `_node` without `.gain`, and `Howler.ctx` can be forced to null.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
-// Extended Howler mock — MUST appear before any import that uses howler.
-// ---------------------------------------------------------------------------
+vi.mock("howler", () => import("./howler-mock.js"));
 
-type AnyFn = (...args: unknown[]) => void;
-
-vi.mock("howler", () => {
-  const handlers = new Map<object, Map<string, AnyFn>>();
-  let nextSoundId = 1;
-  let mockHtml5Mode = false;
-  let forceCtxNull = false;
-
-  function makeMockGainParam() {
-    return {
-      value: 1,
-      setValueAtTime: vi.fn(),
-      setValueCurveAtTime: vi.fn(),
-      cancelScheduledValues: vi.fn(),
-      linearRampToValueAtTime: vi.fn(),
-    };
-  }
-
-  const mockCtx = {
-    state: "running",
-    currentTime: 0,
-    resume: vi.fn().mockResolvedValue(undefined),
-    // createGain is kept so audio.test.ts mock compatibility is not needed
-    // here; this file is separate. We keep it to avoid crashing if any code
-    // path touches it, but the new equal-power src does NOT call createGain.
-    createGain: vi.fn(() => ({
-      gain: makeMockGainParam(),
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-    })),
-  };
-
-  class Howl {
-    _sounds: Array<{ _id: number; _node: { gain?: ReturnType<typeof makeMockGainParam> } | {} }> =
-      [];
-    opts: { src: string[]; preload?: boolean; onload?: AnyFn };
-    fade = vi.fn();
-    volume = vi.fn();
-    rate = vi.fn();
-    loop = vi.fn();
-    stop = vi.fn();
-    pause = vi.fn();
-    unload = vi.fn();
-
-    constructor(opts: { src: string[]; preload?: boolean; onload?: AnyFn }) {
-      this.opts = opts;
-      handlers.set(this, new Map());
-      // Howler's init() installs the `onload` constructor option as a listener.
-      if (opts.onload !== undefined) handlers.get(this)?.set("load", opts.onload);
-      Promise.resolve().then(() => {
-        const map = handlers.get(this);
-        if (map === undefined) return;
-        const cb = map.get("load");
-        cb?.(undefined, undefined);
-      });
-    }
-
-    once(event: string, cb: AnyFn): void {
-      handlers.get(this)?.set(event, cb);
-    }
-
-    // Real Howler exposes off(); load() detaches its `load`/`loaderror`
-    // once-handlers on settle (the post-abort late-load guard) with a bare
-    // off() that clears every event on this Howl. Mirror both shapes so the
-    // mock does not diverge from Howler and throw on the new detach call.
-    off(event?: string): void {
-      const map = handlers.get(this);
-      if (event === undefined) map?.clear();
-      else map?.delete(event);
-    }
-
-    play(): number {
-      const id = nextSoundId++;
-      // Web Audio mode: _node has a .gain AudioParam.
-      // HTML5 mode: _node has no .gain.
-      const node = mockHtml5Mode ? ({} as {}) : { gain: makeMockGainParam() };
-      this._sounds.push({ _id: id, _node: node });
-      return id;
-    }
-  }
-
-  function __setHtml5Mode(v: boolean): void {
-    mockHtml5Mode = v;
-  }
-
-  function __resetSoundId(): void {
-    nextSoundId = 1;
-  }
-
-  function __getMockCtx() {
-    return mockCtx;
-  }
-
-  function __forceCtxNull(v: boolean): void {
-    forceCtxNull = v;
-  }
-
-  return {
-    Howl,
-    Howler: {
-      get ctx() {
-        // Real Howler models "no AudioContext" as null, never undefined.
-        return forceCtxNull ? null : mockCtx;
-      },
-      volume: vi.fn(),
-      // Howler's own running/suspended tracking (distinct from ctx.state);
-      // Howl.play() only starts Web Audio playback while it is "running".
-      state: "running",
-    },
-    __setHtml5Mode,
-    __resetSoundId,
-    __getMockCtx,
-    __forceCtxNull,
-  };
-});
-
-// ---------------------------------------------------------------------------
-// Imports (after vi.mock hoisting)
-// ---------------------------------------------------------------------------
-
-import { Howler, __forceCtxNull, __getMockCtx, __resetSoundId, __setHtml5Mode } from "howler";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
+import type { FakeParam } from "./fake-web-audio.js";
+import {
+  Howler,
+  __resetMock,
+  __setCtxNull as forceCtxNull,
+  mockCtx,
+  __setHtml5Mode as setHtml5Mode,
+} from "./howler-mock.js";
 
-// ---------------------------------------------------------------------------
-// Typed helpers
-// ---------------------------------------------------------------------------
-
-function setHtml5Mode(v: boolean): void {
-  (__setHtml5Mode as (v: boolean) => void)(v);
-}
-
-function resetSoundId(): void {
-  (__resetSoundId as () => void)();
-}
-
-function getMockCtx(): ReturnType<typeof __getMockCtx> {
-  return (__getMockCtx as () => ReturnType<typeof __getMockCtx>)();
-}
-
-function forceCtxNull(v: boolean): void {
-  (__forceCtxNull as (v: boolean) => void)(v);
+function getMockCtx(): typeof mockCtx {
+  return mockCtx;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,13 +35,7 @@ async function makeAudioWithSounds() {
 }
 
 // Helper: get the gain param from the first _sound of a nativeHowl.
-type GainParam = {
-  value: number;
-  setValueAtTime: ReturnType<typeof vi.fn>;
-  setValueCurveAtTime: ReturnType<typeof vi.fn>;
-  cancelScheduledValues: ReturnType<typeof vi.fn>;
-  linearRampToValueAtTime: ReturnType<typeof vi.fn>;
-};
+type GainParam = FakeParam;
 
 function getFirstGain(sound: { nativeHowl: { _sounds: Array<{ _node?: { gain?: GainParam } }> } }) {
   const node = sound.nativeHowl._sounds[0]?._node as { gain?: GainParam } | undefined;
@@ -183,8 +46,17 @@ function getFirstGain(sound: { nativeHowl: { _sounds: Array<{ _node?: { gain?: G
 // by one linearRampToValueAtTime per remaining curve point (piecewise linear,
 // the same shape setValueCurveAtTime would render, without its exclusive time
 // window). Rebuild the scheduled curve values and their times from the calls.
+// Howler's own gain writes (a voice start, volume(v, id)) also go through
+// setValueAtTime, so the ramp's start is the LAST setValueAtTime issued before
+// the first ramp point.
 function scheduledRamp(g: GainParam): { curve: number[]; times: number[] } {
-  const start = g.setValueAtTime.mock.calls[0] as [number, number];
+  const firstRamp = g.linearRampToValueAtTime.mock.invocationCallOrder[0] ?? 0;
+  const sets = g.setValueAtTime.mock.calls as Array<[number, number]>;
+  const orders = g.setValueAtTime.mock.invocationCallOrder;
+  let start = sets[0] as [number, number];
+  for (let i = 0; i < sets.length; i++) {
+    if ((orders[i] ?? 0) < firstRamp) start = sets[i] as [number, number];
+  }
   const ramps = g.linearRampToValueAtTime.mock.calls as Array<[number, number]>;
   return {
     curve: [start[0], ...ramps.map((r) => r[0])],
@@ -192,24 +64,24 @@ function scheduledRamp(g: GainParam): { curve: number[]; times: number[] } {
   };
 }
 
+/** Invocation order of the ramp's start (see scheduledRamp). */
+function rampStartOrder(g: GainParam): number {
+  const firstRamp = g.linearRampToValueAtTime.mock.invocationCallOrder[0] ?? 0;
+  return Math.max(...g.setValueAtTime.mock.invocationCallOrder.filter((o) => o < firstRamp));
+}
+
 // ---------------------------------------------------------------------------
 // Reset between tests
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  setHtml5Mode(false);
-  forceCtxNull(false);
-  resetSoundId();
+  __resetMock();
   vi.clearAllMocks();
-  getMockCtx().currentTime = 0;
-  getMockCtx().state = "running";
-  (Howler as unknown as { state: string }).state = "running";
-  getMockCtx().resume.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
-  setHtml5Mode(false);
-  forceCtxNull(false);
+  __resetMock();
+  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -217,9 +89,10 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("A. backward-compat linear path", () => {
-  it("A1: no curve option calls Howl.fade() on both sounds; no _node.gain ramp scheduling; resolves after duration", async () => {
+  it("A1: no curve option calls Howl.fade() on both sounds; no equal-power schedule; resolves after duration", async () => {
     vi.useFakeTimers();
     const { audio, from, to } = await makeAudioWithSounds();
+    from.play();
     const fadeSpy = vi.spyOn(from.nativeHowl, "fade");
     const fadeSpy2 = vi.spyOn(to.nativeHowl, "fade");
     const p = audio.crossfade(from, to, { duration: 1 });
@@ -227,7 +100,8 @@ describe("A. backward-compat linear path", () => {
     await expect(p).resolves.toBeUndefined();
     expect(fadeSpy).toHaveBeenCalledTimes(1);
     expect(fadeSpy2).toHaveBeenCalledTimes(1);
-    // No gain scheduling in linear path.
+    // The only gain ramps are Howler.fade()'s own single linear ramp per voice
+    // (1 -> 0 outgoing, 0 -> 1 incoming) — not the 64-point equal-power one.
     const fromGain = getFirstGain(
       from as unknown as {
         nativeHowl: { _sounds: Array<{ _node?: { gain?: GainParam } }> };
@@ -238,15 +112,10 @@ describe("A. backward-compat linear path", () => {
         nativeHowl: { _sounds: Array<{ _node?: { gain?: GainParam } }> };
       },
     );
-    // to's play is called in linear path too; but gain scheduling should not happen.
-    if (fromGain !== undefined) {
-      expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
-      expect(fromGain.linearRampToValueAtTime).not.toHaveBeenCalled();
-    }
-    if (toGain !== undefined) {
-      expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
-      expect(toGain.linearRampToValueAtTime).not.toHaveBeenCalled();
-    }
+    expect(fromGain?.setValueCurveAtTime).not.toHaveBeenCalled();
+    expect(fromGain?.linearRampToValueAtTime.mock.calls).toEqual([[0, 1]]);
+    expect(toGain?.setValueCurveAtTime).not.toHaveBeenCalled();
+    expect(toGain?.linearRampToValueAtTime.mock.calls).toEqual([[1, 1]]);
     audio.dispose();
     vi.useRealTimers();
   });
@@ -322,11 +191,13 @@ describe("B. equal-power baseline", () => {
     const fromHowl = from.nativeHowl as unknown as {
       _sounds: Array<{ _id: number; _node: { gain: GainParam } }>;
     };
+    const fromGain = fromHowl._sounds[0]!._node.gain;
+    // Forget Howler's own start / volume writes from from.play().
+    fromGain.setValueAtTime.mockClear();
     const p = audio.crossfade(from, to, { duration: 2, curve: "equal-power" });
     await vi.advanceTimersByTimeAsync(2000);
     await p;
 
-    const fromGain = fromHowl._sounds[0]!._node.gain;
     // No SetValueCurve event: its exclusive window would make any other gain
     // write during the ramp throw NotSupportedError.
     expect(fromGain.setValueCurveAtTime).not.toHaveBeenCalled();
@@ -371,12 +242,10 @@ describe("B. equal-power baseline", () => {
 
     expect(toGain.setValueCurveAtTime).not.toHaveBeenCalled();
     expect(toGain.linearRampToValueAtTime).toHaveBeenCalledTimes(63);
-    // setValueAtTime(0, now) is called on to's gain
-    expect(toGain.setValueAtTime).toHaveBeenCalled();
-    const setAtTimeCall = toGain.setValueAtTime.mock.calls[0]!;
-    expect(setAtTimeCall[0]).toBe(0);
-    expect(setAtTimeCall[1]).toBe(0);
+    // The ramp starts with setValueAtTime(0, now) on to's gain.
     const { curve, times } = scheduledRamp(toGain);
+    expect(curve[0]).toBe(0);
+    expect(times[0]).toBe(0);
     expect(times[63]).toBe(2);
     for (let i = 0; i < 64; i++) {
       expect(curve[i]!).toBeCloseTo(Math.sin((i / 63) * (Math.PI / 2)), 5);
@@ -384,7 +253,7 @@ describe("B. equal-power baseline", () => {
 
     // Order check: cancelScheduledValues → setValueAtTime → first linearRampToValueAtTime
     const cancelOrder = toGain.cancelScheduledValues.mock.invocationCallOrder[0]!;
-    const setAtOrder = toGain.setValueAtTime.mock.invocationCallOrder[0]!;
+    const setAtOrder = rampStartOrder(toGain);
     const rampOrder = toGain.linearRampToValueAtTime.mock.invocationCallOrder[0]!;
     expect(cancelOrder).toBeLessThan(setAtOrder);
     expect(setAtOrder).toBeLessThan(rampOrder);
@@ -637,7 +506,7 @@ describe("D. disposed guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("E. HTML5 fallback", () => {
-  it("E1: HTML5 mode (_node has no .gain) throws AudioError with exact message", async () => {
+  it("E1: HTML5 mode (_node has no .gain) throws AudioError with the prefixed message and stops the started `to` voice", async () => {
     setHtml5Mode(true);
     const { audio, from, to } = await makeAudioWithSounds();
     from.play(); // plays in html5 mode, _node has no .gain
@@ -648,13 +517,17 @@ describe("E. HTML5 fallback", () => {
       err = e;
     }
     expect(err).toBeInstanceOf(AudioError);
-    expect((err as AudioError).message).toBe(
-      "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
+    expect((err as AudioError).message).toMatch(
+      /^aiaudiojs: equal-power crossfade requires Web Audio mode; HTML5 fallback active$/,
     );
+    // The `to` voice the call had already started is stopped: no orphan.
+    const toVoices = (to.nativeHowl as unknown as { _sounds: Array<{ _ended: boolean }> })._sounds;
+    expect(toVoices).toHaveLength(1);
+    expect(toVoices[0]?._ended).toBe(true);
     audio.dispose();
   });
 
-  it("E2: when Howler.ctx is null (no Web Audio), equal-power throws AudioError with exact message", async () => {
+  it("E2: when Howler.ctx is null (no Web Audio), equal-power throws AudioError with the prefixed message", async () => {
     forceCtxNull(true);
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
@@ -665,15 +538,15 @@ describe("E. HTML5 fallback", () => {
       err = e;
     }
     expect(err).toBeInstanceOf(AudioError);
-    expect((err as AudioError).message).toBe(
-      "equal-power crossfade requires Web Audio mode; HTML5 fallback active",
+    expect((err as AudioError).message).toMatch(
+      /^aiaudiojs: equal-power crossfade requires Web Audio mode; HTML5 fallback active$/,
     );
     forceCtxNull(false);
     audio.dispose();
   });
 
   it("E3: Web Audio mode with a non-running context throws a distinct AudioError (not the HTML5 one) before starting `to`", async () => {
-    const H = Howler as unknown as { state: string };
+    const H = Howler;
     const { audio, from, to } = await makeAudioWithSounds();
     from.play();
     const toPlaySpy = vi.spyOn(to.nativeHowl, "play");
@@ -690,8 +563,8 @@ describe("E. HTML5 fallback", () => {
         err = e;
       }
       expect(err).toBeInstanceOf(AudioError);
-      expect((err as AudioError).message).toBe(
-        "equal-power crossfade requires a running AudioContext; call unlock() first",
+      expect((err as AudioError).message).toMatch(
+        /^aiaudiojs: equal-power crossfade requires a running AudioContext; call unlock\(\) first$/,
       );
     }
     expect(toPlaySpy).not.toHaveBeenCalled();
@@ -776,5 +649,216 @@ describe("G. multi-voice from", () => {
     }
     audio.dispose();
     vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group H — completion stop, loop option, self / ping-pong crossfades,
+// dispose and abort edge cases (0.6.0)
+// ---------------------------------------------------------------------------
+
+describe("H. equal-power completion and edge cases", () => {
+  interface Voice {
+    _id: number;
+    _paused: boolean;
+    _ended: boolean;
+    _node: { gain: GainParam };
+  }
+  const pool = (s: { nativeHowl: unknown }): Voice[] =>
+    (s.nativeHowl as { _sounds: Voice[] })._sounds;
+  const byId = (s: { nativeHowl: unknown }, id: number): Voice | undefined =>
+    pool(s).find((v) => v._id === id);
+  const active = (s: { nativeHowl: unknown }): number[] =>
+    pool(s)
+      .filter((v) => !v._paused && !v._ended)
+      .map((v) => v._id);
+
+  it("H1: a looping `from` voice is stopped at completion; the incoming voice keeps playing", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    const fromId = from.play({ loop: true });
+    const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power" });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(byId(from, fromId)?._ended).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await p;
+    expect(byId(from, fromId)).toMatchObject({ _ended: true, _paused: true });
+    expect(active(to)).toHaveLength(1);
+    audio.dispose();
+  });
+
+  it("H2: ping-pong A -> B -> A never ramps A's first voice back up", async () => {
+    vi.useFakeTimers();
+    const { audio, from: a, to: b } = await makeAudioWithSounds();
+    const a1 = a.play({ loop: true });
+    const p1 = audio.crossfade(a, b, { duration: 1, curve: "equal-power", loop: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    await p1;
+    expect(byId(a, a1)?._ended).toBe(true);
+    const a1Gain = byId(a, a1)?._node.gain as GainParam;
+    const rampsBefore = a1Gain.linearRampToValueAtTime.mock.calls.length;
+    const p2 = audio.crossfade(b, a, { duration: 1, curve: "equal-power", loop: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    await p2;
+    // No new ramp was scheduled on A's first voice.
+    expect(a1Gain.linearRampToValueAtTime.mock.calls.length).toBe(rampsBefore);
+    const [a2] = active(a);
+    expect(active(a)).toHaveLength(1);
+    expect(a2).not.toBe(a1);
+    expect(scheduledRamp(byId(a, a2 as number)?._node.gain as GainParam).curve.at(-1)).toBeCloseTo(
+      1,
+      5,
+    );
+    expect(active(b)).toHaveLength(0);
+    audio.dispose();
+  });
+
+  it("H3: aborting leaves `from` running — even after the duration elapses", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    const fromId = from.play({ loop: true });
+    const stopSpy = vi.spyOn(from.nativeHowl, "stop");
+    const ctrl = new AbortController();
+    const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power", signal: ctrl.signal });
+    ctrl.abort();
+    await expect(p).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(byId(from, fromId)?._ended).toBe(false);
+    audio.dispose();
+  });
+
+  it("H4: crossfade(s, s): the old voice rides cos and stops; the new voice rides sin and keeps playing", async () => {
+    vi.useFakeTimers();
+    const { audio, from: s } = await makeAudioWithSounds();
+    const old = s.play({ loop: true });
+    const p = audio.crossfade(s, s, { duration: 1, curve: "equal-power", loop: true });
+    const fresh = active(s).find((id) => id !== old) as number;
+    expect(fresh).toBeDefined();
+    const oldCurve = scheduledRamp(byId(s, old)?._node.gain as GainParam).curve;
+    const newCurve = scheduledRamp(byId(s, fresh)?._node.gain as GainParam).curve;
+    expect(oldCurve[0]).toBeCloseTo(1, 5);
+    expect(oldCurve.at(-1)).toBeCloseTo(0, 5);
+    expect(newCurve[0]).toBeCloseTo(0, 5);
+    expect(newCurve.at(-1)).toBeCloseTo(1, 5);
+    // The new voice got exactly one 63-point schedule (never the cos one).
+    expect(byId(s, fresh)?._node.gain.linearRampToValueAtTime).toHaveBeenCalledTimes(63);
+    await vi.advanceTimersByTimeAsync(1000);
+    await p;
+    expect(byId(s, old)?._ended).toBe(true);
+    expect(active(s)).toEqual([fresh]);
+    expect(s.nativeHowl.loop(fresh)).toBe(true);
+    audio.dispose();
+  });
+
+  it("H5: `loop: true` starts the incoming voice looping; the default stays non-looping", async () => {
+    const { audio, from, to } = await makeAudioWithSounds();
+    from.play();
+    audio.crossfade(from, to, { duration: 1, curve: "equal-power", loop: true }).catch(() => {});
+    expect(to.nativeHowl.loop(active(to)[0] as number)).toBe(true);
+    audio.crossfade(to, from, { duration: 1, curve: "equal-power" }).catch(() => {});
+    expect(from.nativeHowl.loop(active(from).at(-1) as number)).toBe(false);
+    audio.dispose();
+  });
+
+  it("H6: dispose mid-crossfade — the promise resolves and the disposed `from` is not touched", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    from.play({ loop: true });
+    const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power" });
+    from.dispose();
+    const stopSpy = vi.spyOn(from.nativeHowl, "stop");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBeUndefined();
+    expect(stopSpy).not.toHaveBeenCalled();
+    const c = await audio.load("c.mp3");
+    const d = await audio.load("d.mp3");
+    c.play();
+    const p2 = audio.crossfade(c, d, { duration: 1, curve: "equal-power" });
+    audio.dispose();
+    const stopC = vi.spyOn(c.nativeHowl, "stop");
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p2).resolves.toBeUndefined();
+    expect(stopC).not.toHaveBeenCalled();
+  });
+
+  it("H7: a throwing onAbort (freeze) settles, detaches, and the completion stop never runs later", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    const fromId = from.play({ loop: true });
+    const ctrl = new AbortController();
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+    const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power", signal: ctrl.signal });
+    const boom = new DOMException("Can't add events during a curve event", "NotSupportedError");
+    (byId(from, fromId)?._node.gain as GainParam).setValueAtTime.mockImplementation(() => {
+      throw boom;
+    });
+    try {
+      ctrl.abort();
+    } catch (e) {
+      // happy-dom rethrows listener errors; a browser reports them instead.
+      expect(e).toBe(boom);
+    }
+    await expect(p).resolves.toBeUndefined();
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    const stopSpy = vi.spyOn(from.nativeHowl, "stop");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(byId(from, fromId)?._ended).toBe(false);
+    audio.dispose();
+  });
+
+  it("H8: Howler gain writes on the incoming voice mid-ramp do not throw (curve-overlap rule enforced by the mock)", async () => {
+    vi.useFakeTimers();
+    const { audio, from: a, to: b } = await makeAudioWithSounds();
+    const c = await audio.load("c.mp3");
+    a.play({ loop: true });
+    audio.crossfade(a, b, { duration: 4, curve: "equal-power" }).catch(() => {});
+    getMockCtx().currentTime = 1;
+    const bId = active(b)[0] as number;
+    let threw: unknown;
+    try {
+      b.fade(1, 0.5, 200).catch(() => {});
+      b.pause(bId);
+      b.resume(bId);
+      audio.crossfade(b, c, { duration: 1 }).catch(() => {});
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeUndefined();
+    audio.dispose();
+  });
+
+  it("H10: an abort fired re-entrantly from the completion stop does not also run the abort freeze", async () => {
+    vi.useFakeTimers();
+    const { audio, from, to } = await makeAudioWithSounds();
+    from.play({ loop: true });
+    const ctrl = new AbortController();
+    const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power", signal: ctrl.signal });
+    const toGain = pool(to)[0]?._node.gain as GainParam;
+    const cancelsBefore = toGain.cancelScheduledValues.mock.calls.length;
+    const howl = from.nativeHowl;
+    const realStop = howl.stop.bind(howl);
+    vi.spyOn(howl, "stop").mockImplementation((id?: number) => {
+      ctrl.abort();
+      return realStop(id);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBeUndefined();
+    expect(howl.stop).toHaveBeenCalled();
+    expect(toGain.cancelScheduledValues.mock.calls.length).toBe(cancelsBefore);
+    audio.dispose();
+  });
+
+  it("H9: the mock's gain param does enforce the rule — a Howler write inside a setValueCurveAtTime window throws", async () => {
+    const { audio, from } = await makeAudioWithSounds();
+    const id = from.play();
+    const gain = byId(from, id)?._node.gain as GainParam;
+    gain.setValueCurveAtTime(new Float32Array([1, 0]), 0, 2);
+    expect(() => from.nativeHowl.volume(0.5, id)).toThrow(
+      expect.objectContaining({ name: "NotSupportedError" }),
+    );
+    await expect(from.fade(1, 0, 100, id)).rejects.toMatchObject({ name: "NotSupportedError" });
+    audio.dispose();
   });
 });
