@@ -40,8 +40,8 @@ const budgets = {
   // play resume guard) and two P3s (live loop flag + playerror teardown,
   // activation-event autoUnlock retry). Not a precedent for routine bumps.
   //
-  // 0.6.0 minor: bumped 2500 → 2700 B (maintainer-approved for the 0.6.0
-  // minor, the ceiling granted by the ai*js 0.6.0 size-budget decision).
+  // 0.6.0 minor: bumped 2500 → 2600 B (maintainer-approved for the 0.6.0
+  // minor; the measured closure plus about 25 B of headroom).
   // Measured 2576 B after trimming (shared disposed / HTML5 message
   // constants, one teardown Set replacing four State fields and their
   // dispose-time gates, async unlock(), load() validation inside the promise
@@ -55,7 +55,7 @@ const budgets = {
   //   - dispose() settling in-flight load() calls immediately;
   //   - play() rate validation, the queued-play `playerror` twin listener,
   //     and the `aiaudiojs: ` prefix on every AudioError message.
-  "dist/index.js": 2_700,
+  "dist/index.js": 2_600,
 };
 
 const failures = [];

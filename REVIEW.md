@@ -25,7 +25,7 @@ Current review state after the 2026-09-29 ai*js 0.6.0 pass. Historical fixed ite
 - `autoUnlock` listens on activation-triggering events (`touchend` / `pointerup` / `keydown`) and keeps retrying until `resume()` leaves the context running.
 - `package.json` `exports` nests `types` under `import` / `require` (`require.types` → `dist/index.d.cts`), fixing TS1479 for `node16` / `nodenext` CommonJS consumers; `verify-exports` walks nested conditions and `test/exports.test.ts` type-checks both (0.6.0).
 - The unit suites share one spec-faithful Howler mock (`test/howler-mock.ts`) with play-lock queuing, the bare-`play()` resume branch, sync-emit and `ctx: null` modes, and gain params enforcing the Web Audio curve-overlap and non-finite rules, with a regression test per finding above; `pnpm typecheck` covers `test/` (0.6.0).
-- `dist/index.js` budget is 2,700 B for 0.6.0 (measured 2,576 B); the reasons are itemised in `scripts/check-size.mjs`.
+- `dist/index.js` budget is 2,600 B for 0.6.0 (measured 2,576 B); the reasons are itemised in `scripts/check-size.mjs`.
 - JSDoc for `PlayOptions`, `AudioOptions.volume`, `Audio.volume`, `CrossfadeOptions`, `Sound.resume`, `Sound.fade`, `Sound.dispose`, `Audio.dispose` / `disposeAll`, `Audio.load` and `Audio.crossfade` matches implemented behaviour.
 
 ## Verification Baseline
