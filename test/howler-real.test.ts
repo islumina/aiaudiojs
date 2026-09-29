@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import type { Audio, Sound } from "../src/index.js";
 import {
-  SpecParam,
   WAV,
   WAV2,
   WAV3,
@@ -111,8 +110,20 @@ describe("R3. disposeAll() racing an in-flight load()", () => {
     const audio = createAudio({ autoUnlock: false });
     quietHowler(Howler);
     const p = audio.load(WAV); // decode in flight
-    p.catch(() => {});
+    let state = "pending";
+    p.then(
+      () => {
+        state = "resolved";
+      },
+      () => {
+        state = "rejected";
+      },
+    );
     audio.disposeAll();
+    // Settled by the dispose itself — no timer (Howler's deferred `load`
+    // emit) has run yet.
+    await Promise.resolve();
+    expect(state).toBe("rejected");
     expect(await settledWithin(p, 50)).toBe("rejected");
     await expect(p).rejects.toBeInstanceOf(AudioDisposedError);
     expect((Howler as unknown as { _howls: unknown[] })._howls).toHaveLength(0);
@@ -293,7 +304,8 @@ describe("R9. resume() while a play is queued behind a suspended context", () =>
 describe("R10. Howler gain writes during an equal-power ramp", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    fake = installFakeWebAudio("running", undefined, () => new SpecParam());
+    // Every FakeParam enforces the spec's curve-overlap rule.
+    fake = installFakeWebAudio("running");
   });
 
   async function setup(): Promise<{ audio: Audio; a: Sound; b: Sound; c: Sound }> {
@@ -362,6 +374,88 @@ describe("R10. Howler gain writes during an equal-power ramp", () => {
     (fake as NonNullable<typeof fake>).ctx().currentTime = 0.4;
     expect(() => ctrl.abort()).not.toThrow();
     expect(await settledWithin(p, 10)).toBe("resolved");
+    audio.disposeAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R11. crossfade completion on the real howler voice pool (0.6.0)
+// ---------------------------------------------------------------------------
+
+describe("R11. crossfade completion stops the outgoing voices", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+  });
+
+  for (const curve of ["linear", "equal-power"] as const) {
+    it(`R11a (${curve}). a looping \`from\` is stopped at completion; \`loop: true\` keeps the incoming voice looping`, async () => {
+      const audio = createAudio({ autoUnlock: false });
+      quietHowler(Howler);
+      const a = await loadFlushed(audio, WAV);
+      const b = await loadFlushed(audio, WAV2);
+      const aId = a.play({ loop: true });
+      await vi.advanceTimersByTimeAsync(1);
+      const p = audio.crossfade(a, b, { duration: 1, curve, loop: true });
+      const [bVoice] = active(b);
+      expect(await settledWithin(p, 1000)).toBe("resolved");
+      expect(voices(a).find((v) => v._id === aId)).toMatchObject({ _ended: true, _paused: true });
+      expect(active(a)).toHaveLength(0);
+      expect(active(b).map((v) => v._id)).toEqual([bVoice?._id]);
+      expect(b.nativeHowl.loop(bVoice?._id as number)).toBe(true);
+      audio.disposeAll();
+    });
+
+    it(`R11b (${curve}). crossfade(s, s) stops the old voice and keeps the new one`, async () => {
+      const audio = createAudio({ autoUnlock: false });
+      quietHowler(Howler);
+      const s = await loadFlushed(audio, WAV);
+      const old = s.play({ loop: true });
+      await vi.advanceTimersByTimeAsync(1);
+      const p = audio.crossfade(s, s, { duration: 1, curve, loop: true });
+      expect(await settledWithin(p, 1000)).toBe("resolved");
+      const live = active(s);
+      expect(live).toHaveLength(1);
+      expect(live[0]?._id).not.toBe(old);
+      expect(voices(s).find((v) => v._id === old)?._ended).toBe(true);
+      audio.disposeAll();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R12. non-finite numbers never reach Web Audio (0.6.0)
+// ---------------------------------------------------------------------------
+
+describe("R12. non-finite play rate / fade values", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+  });
+
+  it("R12a. play({ rate: NaN }) throws AudioError and starts no buffer source", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const s = await loadFlushed(audio, WAV);
+    const f = fake as NonNullable<typeof fake>;
+    const before = f.ctx().sources.length;
+    expect(() => s.play({ rate: Number.NaN })).toThrow(AudioError);
+    expect(f.ctx().sources.length).toBe(before);
+    expect(active(s)).toHaveLength(0);
+    audio.disposeAll();
+  });
+
+  it("R12b. fade(NaN, ...) rejects AudioError instead of throwing Web Audio's TypeError", async () => {
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const s = await loadFlushed(audio, WAV);
+    const id = s.play();
+    await vi.advanceTimersByTimeAsync(1);
+    let p: Promise<void> | undefined;
+    expect(() => {
+      p = s.fade(Number.NaN, 0, 100, id);
+    }).not.toThrow();
+    await expect(p).rejects.toBeInstanceOf(AudioError);
     audio.disposeAll();
   });
 });
