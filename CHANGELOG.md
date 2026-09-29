@@ -14,7 +14,7 @@ All notable changes to aiaudiojs are summarized here. Older entries are intentio
 
 - Added: `CrossfadeOptions.loop` (default `false`) starts the incoming voice looping on both curves; `crossfade(s, s)` is supported (the old voices of `s` stop at completion and the new one keeps playing).
 - Changed: `AudioError` messages carry the `aiaudiojs: ` prefix (e.g. `aiaudiojs: cannot crossfade a disposed Sound`, `aiaudiojs: crossfade duration must be a finite number > 0`); match on the class plus a regex rather than the exact text.
-- Changed: `dist/index.js` size budget raised from 2,500 B to 2,700 B (maintainer-approved for the 0.6.0 minor; measured 2,566 B after trimming) for fade validation, crossfade completion-stop and `loop`, `clampDelay`, and dispose-time load settling; itemised in `scripts/check-size.mjs`.
+- Changed: `dist/index.js` size budget raised from 2,500 B to 2,700 B (maintainer-approved for the 0.6.0 minor; measured 2,576 B after trimming) for fade validation, crossfade completion-stop and `loop`, `clampDelay`, and dispose-time load settling; itemised in `scripts/check-size.mjs`.
 - Changed: the unit suites share one spec-faithful Howler mock (`test/howler-mock.ts`: play-lock queuing, the bare-`play()` resume branch, sync-emit and `ctx: null` modes, gain params that enforce the Web Audio curve-overlap and non-finite rules), and `pnpm typecheck` now really type-checks `test/`.
 - Fixed: `load()` now settles even when Howler emits `load` / `loaderror` synchronously inside `new Howl()` (buffer-cache hits, missing/unsupported codecs, `Howler.noAudio`) — the lifecycle listeners are now passed as constructor options so they are attached before Howler can emit.
 - Fixed: `unlock()` and equal-power `crossfade()` now treat `Howler.ctx === null` (real Howler's "no AudioContext" value, not `undefined`) as no context; `unlock()` no longer throws synchronously under the HTML5 fallback, SSR, or a jsdom-style test environment.
@@ -32,6 +32,7 @@ All notable changes to aiaudiojs are summarized here. Older entries are intentio
 - Fixed: a `play()` queued behind Howler's play lock and then rejected with `playerror` (HTML5 autoplay) no longer leaves its `play` listener on the Howl.
 - Fixed: `crossfade()` with a missing or non-object options argument now rejects with `AudioError`, and a non-`Sound` `from` / `to` throws `AudioError`, instead of a raw `TypeError`.
 - Fixed: a non-numeric master `volume` from an untyped JavaScript caller now normalises to `0` like `NaN`, instead of being stored as `NaN`.
+- Fixed: `crossfade()`'s completion stop targets the outgoing voice ids captured when the call started, not the captured Howler `Sound` objects' current `_id`; Howler recycles an ended voice's object for the next `play()` with a fresh id, so a `from` voice that ended mid-crossfade and was replaced by a new `from.play()` used to have that new voice stopped at completion.
 - Docs: the README / README_ZHTW sharp edge on late Howler `load` events after an abort now says they are ignored (true since 0.5.8); STABILITY.md gains a Behavioral Contract section (no dispatch queue, crossfade completion, timer clamp, error channels, disposal).
 
 ## [0.5.9] - 2026-06-29

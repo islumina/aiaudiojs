@@ -17,7 +17,7 @@ Current review state after the 2026-09-29 ai*js 0.6.0 pass. Historical fixed ite
 - `resume()` filters ended voices, returns `-1` when nothing resumes, and never replays a voice whose `play()` is still queued behind the AudioContext; a queued play rejected with `playerror` no longer leaks its `play` listener (0.6.0).
 - `Sound.play()` always starts a new voice, rejects a non-finite `rate` with `AudioError` before starting one (0.6.0), and its `signal` teardown reads the live loop flag and treats `playerror` as terminal.
 - `Sound.fade()` rejects `AudioError` for `from` / `to` outside finite `[0, 1]` and for a non-finite or negative `ms`, before `Howl.fade()` runs, and never throws synchronously (0.6.0).
-- Crossfade stops the outgoing voices it captured before `to` started when the duration elapses, scopes the linear incoming fade to the new voice, supports `crossfade(s, s)` and ping-pong crossfades, and adds `CrossfadeOptions.loop`; abort stops nothing (0.6.0).
+- Crossfade stops, when the duration elapses, the outgoing voices whose ids it captured before `to` started (ids, not Howler's recyclable `Sound` objects, so a `from` voice started mid-crossfade is left playing), scopes the linear incoming fade to the new voice, supports `crossfade(s, s)` and ping-pong crossfades, and adds `CrossfadeOptions.loop`; abort stops nothing (0.6.0).
 - Every `setTimeout` delay goes through one `clampDelay` helper (2,147,483,647 ms), so huge fade / crossfade durations no longer fire at once (0.6.0).
 - Equal-power crossfade applies master volume exactly once, schedules piecewise `linearRampToValueAtTime` ramps (no `setValueCurveAtTime` window for Howler's gain writes to collide with), freezes cleanly on abort even when the freeze throws, and reports a suspended context with its own `AudioError`.
 - HTML5 fallback and unexpected Howler internals throw named `AudioError` rather than orphaning started voices; crossfade reads `from`'s voices before `to` starts (0.6.0).
@@ -25,7 +25,7 @@ Current review state after the 2026-09-29 ai*js 0.6.0 pass. Historical fixed ite
 - `autoUnlock` listens on activation-triggering events (`touchend` / `pointerup` / `keydown`) and keeps retrying until `resume()` leaves the context running.
 - `package.json` `exports` nests `types` under `import` / `require` (`require.types` → `dist/index.d.cts`), fixing TS1479 for `node16` / `nodenext` CommonJS consumers; `verify-exports` walks nested conditions and `test/exports.test.ts` type-checks both (0.6.0).
 - The unit suites share one spec-faithful Howler mock (`test/howler-mock.ts`) with play-lock queuing, the bare-`play()` resume branch, sync-emit and `ctx: null` modes, and gain params enforcing the Web Audio curve-overlap and non-finite rules, with a regression test per finding above; `pnpm typecheck` covers `test/` (0.6.0).
-- `dist/index.js` budget is 2,700 B for 0.6.0 (measured 2,566 B); the reasons are itemised in `scripts/check-size.mjs`.
+- `dist/index.js` budget is 2,700 B for 0.6.0 (measured 2,576 B); the reasons are itemised in `scripts/check-size.mjs`.
 - JSDoc for `PlayOptions`, `AudioOptions.volume`, `Audio.volume`, `CrossfadeOptions`, `Sound.resume`, `Sound.fade`, `Sound.dispose`, `Audio.dispose` / `disposeAll`, `Audio.load` and `Audio.crossfade` matches implemented behaviour.
 
 ## Verification Baseline

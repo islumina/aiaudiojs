@@ -420,6 +420,28 @@ describe("R11. crossfade completion stops the outgoing voices", () => {
       expect(voices(s).find((v) => v._id === old)?._ended).toBe(true);
       audio.disposeAll();
     });
+
+    it(`R11c (${curve}). an outgoing voice that ends and whose pool slot Howler recycles mid-crossfade is not stopped at completion`, async () => {
+      const audio = createAudio({ autoUnlock: false });
+      quietHowler(Howler);
+      const a = await loadFlushed(audio, WAV);
+      const b = await loadFlushed(audio, WAV2);
+      const old = a.play();
+      await vi.advanceTimersByTimeAsync(1);
+      const p = audio.crossfade(a, b, { duration: 1, curve });
+      await vi.advanceTimersByTimeAsync(300);
+      // The outgoing voice ends early (a natural `end` parks it the same way),
+      // and Howler's `_inactiveSound()` then recycles that Sound object for the
+      // next play() with a fresh `_id`. The completion stop must target the
+      // ids captured at crossfade start, not the objects' current `_id`.
+      a.stop(old);
+      const fresh = a.play({ loop: true });
+      expect(fresh).not.toBe(old);
+      expect(voices(a).find((v) => v._id === old)).toBeUndefined();
+      expect(await settledWithin(p, 1000)).toBe("resolved");
+      expect(active(a).map((v) => v._id)).toEqual([fresh]);
+      audio.disposeAll();
+    });
   }
 });
 

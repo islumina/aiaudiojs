@@ -303,6 +303,10 @@ export interface Audio {
    * it and call `to.stop()` explicitly. (The pre-flight HTML5-fallback / disposed
    * / reshaped-`_sounds` throws, by contrast, never leave a `to` voice running.)
    *
+   * On normal completion both curves stop the `from` voices by the ids captured
+   * before `to` started; a `from` voice started after the call (including one
+   * Howler recycled into an ended voice's pool slot) is left playing.
+   *
    * The completion timer is clamped to 2,147,483,647 ms (about 24.8 days).
    */
   crossfade(from: Sound, to: Sound, opts: CrossfadeOptions): Promise<void>;
@@ -939,7 +943,11 @@ export function createAudio(opts?: AudioOptions): Audio {
     // Capture the outgoing voices BEFORE `to` starts, so the completion stop
     // below never includes the new voice — which also makes crossfade(s, s)
     // work. A reshaped `_sounds` throws here, before anything has started.
+    // The stop targets the ids captured now, not the objects' `_id` at
+    // completion: Howler recycles an ended voice's Sound object for the next
+    // play() with a fresh `_id`, which a lazy read would stop instead.
     let outgoing = playing(from.nativeHowl);
+    const outgoingIds = outgoing.map((s) => s._id);
     const toId = to.play({ volume: 0, loop: cfOpts.loop ?? false });
     const durationMs = dur * 1000;
     let onAbort = noop;
@@ -994,7 +1002,7 @@ export function createAudio(opts?: AudioOptions): Audio {
       // Normal completion: stop the ramped outgoing voices so a looping `from`
       // does not play on silently (and is not ramped back up by a later
       // ping-pong crossfade). After an abort the caller owns both voices.
-      if (!from.disposed) for (const s of outgoing) from.nativeHowl.stop(s._id);
+      if (!from.disposed) for (const id of outgoingIds) from.nativeHowl.stop(id);
     });
   }
 
