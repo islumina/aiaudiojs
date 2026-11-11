@@ -7,12 +7,9 @@
 
 import { Howler } from "howler";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import type { Audio, Sound } from "../src/index.js";
+import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import {
-  WAV,
-  WAV2,
-  WAV3,
   active,
   installFakeWebAudio,
   loadFlushed,
@@ -20,6 +17,9 @@ import {
   resetHowler,
   settledWithin,
   voices,
+  WAV,
+  WAV2,
+  WAV3,
 } from "./fake-web-audio.js";
 
 let fake: ReturnType<typeof installFakeWebAudio> | undefined;

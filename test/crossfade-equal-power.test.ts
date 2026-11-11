@@ -12,9 +12,9 @@ vi.mock("howler", () => import("./howler-mock.js"));
 import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import type { FakeParam } from "./fake-web-audio.js";
 import {
-  Howler,
   __resetMock,
   __setCtxNull as forceCtxNull,
+  Howler,
   mockCtx,
   __setHtml5Mode as setHtml5Mode,
 } from "./howler-mock.js";
@@ -790,7 +790,7 @@ describe("H. equal-power completion and edge cases", () => {
     const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
     const p = audio.crossfade(from, to, { duration: 1, curve: "equal-power", signal: ctrl.signal });
     const boom = new DOMException("Can't add events during a curve event", "NotSupportedError");
-    (byId(from, fromId)?._node.gain as GainParam).setValueAtTime.mockImplementation(() => {
+    (byId(from, fromId)!._node.gain as GainParam).setValueAtTime.mockImplementation(() => {
       throw boom;
     });
     try {

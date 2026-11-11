@@ -20,7 +20,7 @@ vi.mock("howler", () => import("./howler-mock.js"));
 
 import { createAudio } from "../src/index.js";
 import type { FakeParam } from "./fake-web-audio.js";
-import { Howler, __resetMock } from "./howler-mock.js";
+import { __resetMock, Howler } from "./howler-mock.js";
 
 type GainParam = FakeParam;
 
