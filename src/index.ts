@@ -156,8 +156,8 @@ export interface Sound {
    *
    * - With `id`: resumes that specific voice and returns it, or returns
    *   `-1` if `id` is not currently a paused, non-ended voice (e.g. it
-   *   already ended naturally, was never paused, or its `play()` is still
-   *   queued behind the AudioContext).
+   *   already ended naturally, was never paused, or its `play()` or an
+   *   earlier `resume()` is still queued behind the AudioContext).
    * - Without `id`: resumes every currently-paused, non-ended voice
    *   (`_paused === true && _ended !== true`) and returns the last resumed
    *   id, or `-1` if nothing was resumed.
@@ -539,7 +539,9 @@ class SoundImpl implements Sound {
   // queued behind once('resume'); HTML5: waiting on the media element). Such a
   // voice reads `_paused === true` until Howler starts it, but it was never
   // paused: replaying it from resume() would queue a SECOND start and orphan
-  // the first buffer source. Each id leaves the set on its Howler `play` event.
+  // the first buffer source. Every howl.play() goes through pend(), from
+  // play() and resume() alike, so a resume() that itself gets queued is
+  // tracked too. Each id leaves the set on its Howler `play` (or `playerror`).
   private readonly _pendingPlays = new Set<number>();
 
   constructor(
@@ -559,6 +561,23 @@ class SoundImpl implements Sound {
     if (this._disposed) throw new AudioDisposedError(SOUND_DISPOSED);
   }
 
+  // Records `id` in `_pendingPlays` when the howl.play() that just returned it
+  // was queued behind Howler's play lock. Returns `id`.
+  private pend(id: number): number {
+    if ((this.howl as unknown as { _playLock?: boolean })._playLock === true) {
+      // The queued voice either starts (`play`) or, under the HTML5 fallback,
+      // is rejected (`playerror`, never followed by `play`). Either ends the
+      // pending state; detach the twin listener so neither is left behind.
+      this._pendingPlays.add(id);
+      const settled = (): void => {
+        this._pendingPlays.delete(id);
+        this.howl.off("play", settled, id).off("playerror", settled, id);
+      };
+      this.howl.once("play", settled, id).once("playerror", settled, id);
+    }
+    return id;
+  }
+
   play(opts?: PlayOptions): number {
     this.ck();
     const looping = opts?.loop ?? false;
@@ -574,18 +593,7 @@ class SoundImpl implements Sound {
     // would then clobber that voice's volume / rate / loop. Naming the
     // `__default` sprite (which Howler always defines; load() adds no sprites)
     // skips that branch and still plays the full buffer.
-    const id = this.howl.play("__default");
-    if ((this.howl as unknown as { _playLock?: boolean })._playLock === true) {
-      // The queued voice either starts (`play`) or, under the HTML5 fallback,
-      // is rejected (`playerror`, never followed by `play`). Either ends the
-      // pending state; detach the twin listener so neither is left behind.
-      this._pendingPlays.add(id);
-      const settled = (): void => {
-        this._pendingPlays.delete(id);
-        this.howl.off("play", settled, id).off("playerror", settled, id);
-      };
-      this.howl.once("play", settled, id).once("playerror", settled, id);
-    }
+    const id = this.pend(this.howl.play("__default"));
     // Per-id volume is a RELATIVE [0,1] value; the master is applied exactly
     // once via Howler's global gain (`Howler.volume`). Defaulting this to the
     // masterVolume would double-attenuate (Howler global × per-id default →
@@ -665,18 +673,17 @@ class SoundImpl implements Sound {
     // stopped / naturally-ended / never-played pooled voices `_paused === true`
     // AND `_ended === true`; replaying those restarts finished SFX from zero.
     // A voice whose play() is still pending is not paused either (see
-    // `_pendingPlays`).
+    // `_pendingPlays`), including one this resume() queued on an earlier call
+    // while the context was suspended: a second resume() skips it.
     let last = -1;
     for (const s of getSounds(this.howl)) {
       if (s._paused !== true || s._ended === true || s._id === undefined) continue;
       if (this._pendingPlays.has(s._id)) continue;
       if (id !== undefined) {
         if (s._id !== id) continue;
-        this.howl.play(id);
-        return id;
+        return this.pend(this.howl.play(id));
       }
-      this.howl.play(s._id);
-      last = s._id;
+      last = this.pend(this.howl.play(s._id));
     }
     return last;
   }

@@ -84,6 +84,12 @@ MIT
 
 All notable changes to aiaudiojs are summarized here. Older entries are intentionally compact so AI agents read current behavior first.
 
+## [Unreleased]
+
+### Changes
+
+- Fixed: calling `resume()` twice on a paused voice while the `AudioContext` is suspended (Howler autoSuspend, an iOS interruption) no longer starts two buffer sources once the context resumes; the first `resume()` is now tracked like a queued `play()`, so the second skips that voice and returns `-1`, and `stop()` silences the one source that starts.
+
 ## [0.6.0] - 2026-09-29
 
 ### Breaking

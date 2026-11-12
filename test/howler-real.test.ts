@@ -481,3 +481,41 @@ describe("R12. non-finite play rate / fade values", () => {
     audio.disposeAll();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R13. resume() twice on a paused voice while the context is suspended
+// ---------------------------------------------------------------------------
+
+describe("R13. repeated resume() of a paused voice behind a suspended context", () => {
+  it("R13a. resume() called twice while the context is suspended starts ONE buffer source", async () => {
+    vi.useFakeTimers();
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = () => {
+        if (fake !== undefined) fake.ctx().state = "running";
+        r();
+      };
+    });
+    fake = installFakeWebAudio("running", () => gate);
+    const f = fake;
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const bgm = await loadFlushed(audio, WAV);
+    const id = bgm.play({ loop: true });
+    await vi.advanceTimersByTimeAsync(10);
+    bgm.pause(id);
+    await vi.advanceTimersByTimeAsync(10);
+    const before = f.ctx().sources.filter((s) => s.start.mock.calls.length > 0).length;
+    f.ctx().state = "suspended";
+    (Howler as unknown as { state: string }).state = "suspended";
+    bgm.resume(id);
+    bgm.resume();
+    open();
+    await vi.advanceTimersByTimeAsync(10);
+    const started = f.ctx().sources.filter((s) => s.start.mock.calls.length > 0);
+    bgm.stop(id);
+    const orphans = started.filter((s) => s.stop.mock.calls.length === 0).length;
+    audio.disposeAll();
+    expect({ newStarts: started.length - before, orphans }).toEqual({ newStarts: 1, orphans: 0 });
+  });
+});
