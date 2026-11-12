@@ -14,15 +14,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("howler", () => import("./howler-mock.js"));
 
-import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import type { Sound } from "../src/index.js";
+import { AudioDisposedError, AudioError, createAudio } from "../src/index.js";
 import {
-  Howler,
-  type MockVoice,
   __releasePlayLock,
   __resetMock,
   __setPlayLock,
+  Howler,
   __lastHowl as lastHowl,
+  type MockVoice,
   mockCtx,
   __setCtxNull as setCtxNull,
   __setMockLoadFail as setLoadFail,
