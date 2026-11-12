@@ -481,3 +481,94 @@ describe("R12. non-finite play rate / fade values", () => {
     audio.disposeAll();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R13. resume() twice on a paused voice while the context is suspended
+// ---------------------------------------------------------------------------
+
+describe("R13. repeated resume() of a paused voice behind a suspended context", () => {
+  it("R13a. resume() called twice while the context is suspended starts ONE buffer source", async () => {
+    vi.useFakeTimers();
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = () => {
+        if (fake !== undefined) fake.ctx().state = "running";
+        r();
+      };
+    });
+    fake = installFakeWebAudio("running", () => gate);
+    const f = fake;
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const bgm = await loadFlushed(audio, WAV);
+    const id = bgm.play({ loop: true });
+    await vi.advanceTimersByTimeAsync(10);
+    bgm.pause(id);
+    await vi.advanceTimersByTimeAsync(10);
+    const before = f.ctx().sources.filter((s) => s.start.mock.calls.length > 0).length;
+    f.ctx().state = "suspended";
+    (Howler as unknown as { state: string }).state = "suspended";
+    bgm.resume(id);
+    bgm.resume();
+    open();
+    await vi.advanceTimersByTimeAsync(10);
+    const started = f.ctx().sources.filter((s) => s.start.mock.calls.length > 0);
+    bgm.stop(id);
+    const orphans = started.filter((s) => s.stop.mock.calls.length === 0).length;
+    audio.disposeAll();
+    expect({ newStarts: started.length - before, orphans }).toEqual({ newStarts: 1, orphans: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R14. a zero-length or flat fade never reaches Howl.fade()
+// ---------------------------------------------------------------------------
+
+describe("R14. fade() with from === to or ms === 0", () => {
+  it("R14a. fade(v, v, 0) leaves the voice volume finite", async () => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const s = await loadFlushed(audio, WAV);
+    const id = s.play({ loop: true, volume: 0.5 });
+    await vi.advanceTimersByTimeAsync(10);
+    await Promise.all([s.fade(0.5, 0.5, 0, id), vi.advanceTimersByTimeAsync(50)]);
+    const vol = voices(s).find((v) => v._id === id)?._volume;
+    let err: unknown;
+    try {
+      s.pause(id);
+      s.resume(id);
+    } catch (e) {
+      err = e;
+    }
+    audio.disposeAll();
+    expect({ vol, err }).toEqual({ vol: 0.5, err: undefined });
+  });
+
+  it("R14b. fade(v, v, ms > 0) sets the volume without Howl.fade() and still resolves at ms", async () => {
+    vi.useFakeTimers();
+    fake = installFakeWebAudio("running");
+    const audio = createAudio({ autoUnlock: false });
+    quietHowler(Howler);
+    const s = await loadFlushed(audio, WAV);
+    const id = s.play({ loop: true, volume: 0.25 });
+    await vi.advanceTimersByTimeAsync(10);
+    const fadeSpy = vi.spyOn(s.nativeHowl, "fade");
+    let settled = false;
+    void s.fade(0.75, 0.75, 100, id).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(99);
+    const early = settled;
+    await vi.advanceTimersByTimeAsync(1);
+    const vol = voices(s).find((v) => v._id === id)?._volume;
+    audio.disposeAll();
+    expect({ called: fadeSpy.mock.calls.length, vol, early, settled }).toEqual({
+      called: 0,
+      vol: 0.75,
+      early: false,
+      settled: true,
+    });
+  });
+});
