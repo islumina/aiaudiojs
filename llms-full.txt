@@ -89,6 +89,7 @@ All notable changes to aiaudiojs are summarized here. Older entries are intentio
 ### Changes
 
 - Fixed: calling `resume()` twice on a paused voice while the `AudioContext` is suspended (Howler autoSuspend, an iOS interruption) no longer starts two buffer sources once the context resumes; the first `resume()` is now tracked like a queued `play()`, so the second skips that voice and returns `-1`, and `stop()` silences the one source that starts.
+- Fixed: `Sound.fade(v, v, ms)` and `Sound.fade(from, to, 0)` now set the volume to `to` directly instead of calling `Howl.fade()`, whose zero-length division wrote `NaN` into the voice volume and whose `from === to` fade never completed, leaving a 4 ms interval running; the promise still resolves after `ms`. Through `nativeHowl`, these two calls now emit Howler's `volume` event instead of `fade`.
 
 ## [0.6.0] - 2026-09-29
 

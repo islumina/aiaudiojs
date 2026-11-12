@@ -176,7 +176,9 @@ export interface Sound {
    * {@link AudioDisposedError} if `dispose()` was already called;
    * {@link AudioError} if `from` or `to` is not a finite number in `[0, 1]`;
    * {@link AudioError} if `ms` is not a finite number `>= 0`. Delays above
-   * 2,147,483,647 ms (about 24.8 days) are clamped. If `dispose()` is called
+   * 2,147,483,647 ms (about 24.8 days) are clamped. When `from === to` or
+   * `ms === 0` the volume is set to `to` at once (no `Howl.fade()`), and the
+   * promise still resolves after `ms`. If `dispose()` is called
    * AFTER `fade()` started, the underlying howl is unloaded but the promise
    * still resolves at the scheduled time.
    */
@@ -701,7 +703,13 @@ class SoundImpl implements Sound {
       }
       if (!isNum(ms)) throw new AudioError("aiaudiojs: fade ms must be a finite number >= 0");
       const delay = clampDelay(ms);
-      this.howl.fade(from, to, delay, id);
+      // Howler's fade divides elapsed time by the length and stops only once
+      // the volume crosses `to`: `ms === 0` writes NaN into the voice volume,
+      // and `from === to` never completes, leaving its 4 ms interval running.
+      // Both mean "set `to` now", so they skip Howl.fade(). Howler reads
+      // `volume(v, undefined)` as the no-id form (every voice), like fade().
+      if (from === to || delay === 0) this.howl.volume(to, id as number);
+      else this.howl.fade(from, to, delay, id);
       // If dispose() runs mid-fade, the howl is unloaded but this still
       // resolves at `delay`, with no observable effect.
       setTimeout(resolve, delay);
